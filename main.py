@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import uvicorn
 
-from src.config import get_debug_status, get_host, get_server_port
+from src.config import get_debug_status, get_host, get_server_port, get_reload
 
 app = FastAPI(debug=get_debug_status())
 
@@ -12,8 +12,8 @@ async def get_root():
 
 if __name__ == "__main__":
     uvicorn.run(
-        app,
+        "main:app",
         host=get_host(),
         port=get_server_port(),
-        reload=get_debug_status(),
+        reload=get_reload(),
     )

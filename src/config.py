@@ -40,4 +40,5 @@ def get_debug_status() -> bool:
 def get_host() -> str:
     return data["server"]["host"]
 
-
+def get_reload() -> bool:
+    return data["server"]["reload"]
