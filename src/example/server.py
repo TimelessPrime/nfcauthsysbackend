@@ -8,7 +8,7 @@ os.system("cls")
 print("//~~ Server Side (Running) ~~//")
 
 # Cấu hình IP và Port (Dùng 0.0.0.0 để máy khác trong mạng LAN có thể kết nối vào, hoặc 127.0.0.1 nếu chạy cùng 1 máy)
-host, port = ("192.168.1.212", 1337)
+host, port = ("0.0.0.0", 1337)
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

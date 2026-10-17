@@ -6,7 +6,7 @@ import time  # 1. Import thư viện time để làm delay
 os.system("cls")
 print("//~~ Client Side ~~//")
 
-host, port = ("192.168.1.212", 1337)
+host, port = ("127.0.0.1", 1337)
 
 # Nếu bạn muốn chạy liên tục dạng vòng lặp, hãy thêm thời gian nghỉ (delay) 
 # để server và client kịp xử lý từng vòng, tránh bị dồn dập lỗi kết nối.
