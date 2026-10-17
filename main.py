@@ -1,7 +1,7 @@
-from fastapi import FastAPI
 import uvicorn
+from fastapi import FastAPI
 
-from src.config import get_debug_status, get_host, get_server_port, get_reload
+from src.config import get_debug_status, get_host, get_reload, get_server_port
 
 app = FastAPI(debug=get_debug_status())
 

@@ -1,6 +1,6 @@
-import socket
-import random
 import os
+import random
+import socket
 import time  # 1. Import thư viện time để làm delay
 
 os.system("cls")

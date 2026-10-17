@@ -1,6 +1,6 @@
-import socket
-import random
 import os
+import random
+import socket
 import time
 
 # Xóa màn hình cho gọn
@@ -52,7 +52,7 @@ try:
             print("  |-- Nhận ACK từ client:", ack)
             print("[✓] Hoàn tất bắt tay với client thành công!")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[!] Lỗi trong quá trình giao tiếp với client: {e}")
         finally:
             # Đóng kết nối riêng với client này để giải phóng
