@@ -15,6 +15,7 @@ from src.bots.config import (
     is_sync_slash_commands,
 )
 from src.bots.connector import (
+    clear_pending_card,
     get_active_esp32_readers,
     get_pending_card,
     register_attendance_hook,
@@ -23,10 +24,9 @@ from src.bots.connector import (
 from src.bots.database import (
     delete_card,
     find_student,
-    get_or_create_blank_student,
     get_recent_logs,
     get_stats,
-    register_student_card,
+    register_or_update_student,
 )
 from src.logger import get_logger
 
@@ -47,176 +47,174 @@ _worker_task: asyncio.Task[None] | None = None
 _recent_unknown_cards: dict[str, float] = {}
 
 
-class ManualRegisterModal(ui.Modal, title="Đăng ký Thẻ NFC Học Sinh"):
+class RegisterType1Modal(ui.Modal, title="Đăng Ký - Nhập UID (Type 1)"):
+    name_input = ui.TextInput(label="Tên học sinh", placeholder="Ví dụ: Nguyễn Văn An", min_length=2, max_length=50)
     uid_input = ui.TextInput(label="Mã UID Thẻ (Hex)", placeholder="Ví dụ: E2801102", min_length=4, max_length=32)
-    student_id_input = ui.TextInput(label="Mã Học Sinh", placeholder="Ví dụ: HS0123", min_length=2, max_length=20)
-    name_input = ui.TextInput(label="Họ và Tên", placeholder="Ví dụ: Nguyễn Văn An", min_length=2, max_length=50)
-    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1", min_length=1, max_length=20)
+    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1 (không bắt buộc)", required=False, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        saved = register_student_card(
-            self.uid_input.value.strip(),
-            self.student_id_input.value.strip(),
-            self.name_input.value.strip(),
-            self.class_input.value.strip(),
-        )
-        embed = discord.Embed(
-            color=discord.Color.green(),
-            description=f"✅ Đã đăng ký thẻ `{saved['uid']}` cho **{saved['full_name']}** ({saved['class_name']}) • `{saved['student_id']}`",
-            timestamp=datetime.now(),
-        )
-        await interaction.response.send_message(embed=embed)
+        clean_uid = self.uid_input.value.strip().upper()
+        name = self.name_input.value.strip()
+        cls = self.class_input.value.strip() or "Chưa phân lớp"
 
-
-class TapToBindModal(ui.Modal, title="Gán thẻ vừa quẹt"):
-    student_id_input = ui.TextInput(label="Mã học sinh", placeholder="Ví dụ: HS0123", min_length=2, max_length=20)
-    name_input = ui.TextInput(label="Họ và tên", placeholder="Ví dụ: Trần Thị Bình", min_length=2, max_length=50)
-    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 11B2", min_length=1, max_length=20)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        pending = get_pending_card()
-        if not pending:
-            await interaction.response.send_message("Chưa có thẻ nào vừa quẹt tại đầu đọc.", ephemeral=True)
+        if len(clean_uid) < 4:
+            fail_embed = discord.Embed(title="Đăng Ký Thất Bại", color=discord.Color.red())
+            fail_embed.description = "Lí Do: Mã UID không hợp lệ (cần ít nhất 4 ký tự)"
+            await interaction.response.send_message(embed=fail_embed)
             return
 
-        saved = register_student_card(
-            pending["uid"],
-            self.student_id_input.value.strip(),
-            self.name_input.value.strip(),
-            self.class_input.value.strip(),
-        )
-        embed = discord.Embed(
-            color=discord.Color.green(),
-            description=f"✅ Đã gán thẻ `{saved['uid']}` cho **{saved['full_name']}** ({saved['class_name']}) • `{saved['student_id']}`\n📍 {pending.get('device_id', 'ESP32')}",
-            timestamp=datetime.now(),
+        saved, _ = register_or_update_student(full_name=name, uid=clean_uid, class_name=cls)
+        embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Tên học sinh: {saved['full_name']}\n"
+            f"- Lớp: {saved['class_name']}\n"
+            f"- UID: {saved['uid']}\n"
+            f"- Phương thức: Trực tiếp (Bot)"
         )
         await interaction.response.send_message(embed=embed)
+
+
+class RegisterType2Modal(ui.Modal, title="Đăng Ký - Quẹt Thẻ (Type 2)"):
+    name_input = ui.TextInput(label="Tên học sinh", placeholder="Ví dụ: Nguyễn Văn An", min_length=2, max_length=50)
+    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1 (không bắt buộc)", required=False, max_length=20)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        name = self.name_input.value.strip()
+        cls = self.class_input.value.strip() or "Chưa phân lớp"
+
+        pending = get_pending_card()
+        if pending:
+            p_uid = pending["uid"]
+            dev = pending.get("device_id", "ESP32")
+            clear_pending_card()
+            saved, _ = register_or_update_student(full_name=name, uid=p_uid, class_name=cls)
+            embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+            embed.description = (
+                f"- Tên học sinh: {saved['full_name']}\n"
+                f"- Lớp: {saved['class_name']}\n"
+                f"- UID: {saved['uid']}\n"
+                f"- Thiết bị: {dev}"
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            embed, view = _build_waiting_card_view(name, cls)
+            await interaction.response.send_message(embed=embed, view=view)
+
+
+def _build_waiting_card_view(ten_hs: str, lop: str) -> tuple[discord.Embed, ui.View]:
+    readers = get_active_esp32_readers()
+    dev_str = readers[0]["device_id"] if readers else "Chưa có thiết bị online"
+
+    embed = discord.Embed(title="Chờ Quẹt Thẻ", color=discord.Color.gold())
+    embed.description = (
+        f"- Tên học sinh: {ten_hs}\n"
+        f"- Lớp: {lop}\n"
+        f"- Đầu đọc: {dev_str}\n"
+        f"- Hướng dẫn: Quẹt thẻ vào đầu đọc ESP32 rồi bấm nút xác nhận bên dưới"
+    )
+
+    view = ui.View(timeout=120)
+    btn = ui.Button(label="Xác nhận thẻ vừa quẹt", style=discord.ButtonStyle.primary, emoji="⚡")
+
+    async def _btn_callback(interaction: discord.Interaction) -> None:
+        new_pending = get_pending_card()
+        if not new_pending:
+            fail_embed = discord.Embed(title="Đăng Ký Thất Bại", color=discord.Color.red())
+            fail_embed.description = "Lí Do: Chưa phát hiện thẻ mới trên đầu đọc. Vui lòng quẹt thẻ trước khi bấm nút."
+            await interaction.response.send_message(embed=fail_embed, ephemeral=True)
+            return
+
+        p_uid = new_pending["uid"]
+        dev = new_pending.get("device_id", "ESP32")
+        clear_pending_card()
+        saved, _ = register_or_update_student(full_name=ten_hs, uid=p_uid, class_name=lop)
+        success_embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+        success_embed.description = (
+            f"- Tên học sinh: {saved['full_name']}\n"
+            f"- Lớp: {saved['class_name']}\n"
+            f"- UID: {saved['uid']}\n"
+            f"- Thiết bị: {dev}"
+        )
+        await interaction.response.edit_message(embed=success_embed, view=None)
+
+    btn.callback = _btn_callback
+    view.add_item(btn)
+    return embed, view
 
 
 class RegistrationPanelView(ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    @ui.button(label="Gán thẻ vừa quẹt", style=discord.ButtonStyle.primary, emoji="⚡")
-    async def btn_tap_bind(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        await interaction.response.send_modal(TapToBindModal())
+    @ui.button(label="Quẹt thẻ (Type 2)", style=discord.ButtonStyle.primary, emoji="⚡")
+    async def btn_type2_reg(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(RegisterType2Modal())
 
-    @ui.button(label="Đăng ký thủ công", style=discord.ButtonStyle.secondary, emoji="📝")
-    async def btn_manual_reg(self, interaction: discord.Interaction, _: ui.Button) -> None:
-        await interaction.response.send_modal(ManualRegisterModal())
+    @ui.button(label="Nhập UID (Type 1)", style=discord.ButtonStyle.secondary, emoji="📝")
+    async def btn_type1_reg(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(RegisterType1Modal())
 
     @ui.button(label="Quét thiết bị", style=discord.ButtonStyle.primary, emoji="📡")
     async def btn_connect(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(embed=_build_ketnoi_embed(trigger_esp32_discovery()), ephemeral=True)
 
-    @ui.button(label="Thống kê", style=discord.ButtonStyle.success, emoji="📊")
+    @ui.button(label="Trạng thái", style=discord.ButtonStyle.success, emoji="📊")
     async def btn_stats(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.send_message(embed=_build_trangthai_embed(), ephemeral=True)
 
 
 def _build_ketnoi_embed(report: dict[str, Any]) -> discord.Embed:
     connected = report.get("connected_devices", [])
-    discovered = report.get("discovered_lan_devices", [])
     backend_ip = report.get("backend_ip", "127.0.0.1")
     tcp_port = report.get("tcp_port", 1337)
 
     color = discord.Color.green() if connected else discord.Color.orange()
-    embed = discord.Embed(title="Kết nối đầu đọc", color=color, timestamp=datetime.now())
+    embed = discord.Embed(title="Kết Nối Đầu Đọc", color=color)
 
-    lines = [f"**Cổng TCP:** `{backend_ip}:{tcp_port}`"]
+    lines = [
+        f"- Cổng TCP Backend: {backend_ip}:{tcp_port}",
+        f"- Đầu đọc online: {len(connected)} thiết bị",
+    ]
     if connected:
-        lines.append("\n**Đầu đọc online:**")
         for c in connected:
-            auth = "✓" if c.get("authenticated") else "⏳"
-            lines.append(f"• `{c['device_id']}` ({c['ip']}) [{auth}]")
+            auth = "Đã xác thực" if c.get("authenticated") else "Chưa xác thực"
+            lines.append(f"- Thiết bị: {c['device_id']} ({c['ip']}) [{auth}]")
     else:
-        lines.append("\n*Chưa có đầu đọc nào kết nối TCP.*")
-
-    if discovered:
-        lines.append("\n**Dò thấy trên LAN:**")
-        for d in discovered:
-            lines.append(f"• `{d['device_id']}` ({d['ip']})")
+        lines.append("- Trạng thái: Chưa có đầu đọc nào kết nối TCP")
 
     embed.description = "\n".join(lines)
     return embed
 
 
-def _build_dangkythe_embed(hs_query: str) -> tuple[discord.Embed, ui.View | None]:
-    pending = get_pending_card()
-
-    if pending:
-        uid = pending["uid"]
-        student, is_newly_created = get_or_create_blank_student(query=hs_query, uid=uid)
-        dev = pending.get("device_id", "ESP32")
-        name = student.get("full_name") or "Chưa cập nhật"
-        cls = f" ({student.get('class_name')})" if student.get("class_name") else ""
-        embed = discord.Embed(
-            color=discord.Color.green(),
-            description=f"✅ Đã gán thẻ `{uid}` cho **{name}**{cls} • `{student.get('student_id', hs_query)}`\n📍 {dev}",
-            timestamp=datetime.now(),
-        )
-        return embed, None
-
-    student, is_newly_created = get_or_create_blank_student(query=hs_query, uid=None)
-    if is_newly_created:
-        embed = discord.Embed(
-            color=discord.Color.gold(),
-            description=f"📋 Tạo hồ sơ mới: **{student['student_id']}**\nQuẹt thẻ lên đầu đọc rồi bấm nút bên dưới.",
-            timestamp=datetime.now(),
-        )
-        view = ui.View(timeout=120)
-        btn = ui.Button(label="Gán thẻ vừa quẹt", style=discord.ButtonStyle.primary, emoji="⚡")
-
-        async def _btn_callback(interaction: discord.Interaction) -> None:
-            new_pending = get_pending_card()
-            if not new_pending:
-                await interaction.response.send_message("Chưa phát hiện thẻ trên đầu đọc.", ephemeral=True)
-                return
-            updated, _ = get_or_create_blank_student(query=student["student_id"], uid=new_pending["uid"])
-            await interaction.response.send_message(
-                embed=discord.Embed(
-                    color=discord.Color.green(),
-                    description=f"✅ Đã gán thẻ `{new_pending['uid']}` cho **{updated['student_id']}**",
-                )
-            )
-
-        btn.callback = _btn_callback
-        view.add_item(btn)
-        return embed, view
-
-    name = student.get("full_name") or "Chưa cập nhật"
-    cls = f" ({student.get('class_name')})" if student.get("class_name") else ""
-    embed = discord.Embed(
-        color=discord.Color.blue(),
-        description=f"👤 **{name}**{cls} • `{student.get('student_id')}`\nUID hiện tại: `{student.get('uid') or 'Chưa có'}`\n*Quẹt thẻ mới lên đầu đọc để thay đổi.*",
-        timestamp=datetime.now(),
-    )
-    return embed, None
-
-
 def _build_help_embed() -> discord.Embed:
-    embed = discord.Embed(title="Danh sách lệnh", color=discord.Color.blurple())
+    embed = discord.Embed(title="Danh Sách Lệnh", color=discord.Color.blurple())
     embed.description = (
-        "• `/dangkythe <mã-hs>` — Gán thẻ vừa quẹt cho học sinh\n"
-        "• `/themoi` — Xem thẻ chưa đăng ký vừa quẹt\n"
-        "• `/diemdanh [mã-hs]` — Tra cứu học sinh / nhật ký gần nhất\n"
-        "• `/trangthai` — Xem thông số hệ thống và đầu đọc\n"
-        "• `/ketnoi` — Quét tìm đầu đọc ESP32 trên LAN\n"
-        "• `/xoathe <uid>` — Xóa thẻ khỏi hệ thống\n"
-        "• `/panel` — Mở bảng nút thao tác nhanh"
+        "- `/dangky [type] [tên hs]`: Đăng ký thẻ (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ)\n"
+        "- `/diemdanh [hs]`: Tra cứu học sinh hoặc xem lịch sử điểm danh\n"
+        "- `/themoi`: Xem thẻ chưa đăng ký vừa quẹt trên đầu đọc\n"
+        "- `/trangthai`: Xem tình trạng hệ thống và đầu đọc\n"
+        "- `/ketnoi`: Quét và kiểm tra kết nối đầu đọc ESP32\n"
+        "- `/xoathe [uid]`: Xóa thẻ học sinh khỏi hệ thống\n"
+        "- `/panel`: Bảng điều khiển tương tác nhanh"
     )
     return embed
 
 
-def _build_themoi_embed() -> discord.Embed | None:
+def _build_themoi_embed() -> discord.Embed:
     pending = get_pending_card()
     if not pending:
-        return None
-    embed = discord.Embed(
-        color=discord.Color.orange(),
-        description=f"⚠️ **Thẻ chưa đăng ký:** `{pending.get('uid')}`\n📍 {pending.get('device_id')} • 🕒 {str(pending.get('timestamp'))[-8:]}\nDùng `/dangkythe <mã-hs>` để gán.",
-        timestamp=datetime.now(),
+        embed = discord.Embed(title="Thẻ Chưa Đăng Ký", color=discord.Color.blurple())
+        embed.description = "- Trạng thái: Chưa có thẻ mới nào quẹt trên đầu đọc"
+        return embed
+
+    embed = discord.Embed(title="Thẻ Chưa Đăng Ký", color=discord.Color.orange())
+    time_str = _format_event_time(pending.get("timestamp"))
+    embed.description = (
+        f"- UID: {pending.get('uid', 'N/A')}\n"
+        f"- Đầu đọc: {pending.get('device_id', 'ESP32')}\n"
+        f"- Thời gian: {time_str}\n"
+        f"- Hướng dẫn: Dùng `/dangky` (Type 2) để gán thẻ này cho học sinh"
     )
     return embed
 
@@ -225,24 +223,30 @@ def _build_diemdanh_embed(hs: str | None) -> discord.Embed:
     if hs:
         student = find_student(hs)
         if not student:
-            return discord.Embed(description=f"❌ Không tìm thấy học sinh: `{hs}`", color=discord.Color.red())
-        cls = f" ({student.get('class_name')})" if student.get("class_name") else ""
-        embed = discord.Embed(color=discord.Color.blue(), timestamp=datetime.now())
+            embed = discord.Embed(title="Tra Cứu Thất Bại", color=discord.Color.red())
+            embed.description = f"Lí Do: Không tìm thấy học sinh với từ khóa: {hs}"
+            return embed
+
+        embed = discord.Embed(title="Thông Tin Học Sinh", color=discord.Color.blue())
         embed.description = (
-            f"👤 **{student.get('full_name', 'N/A')}**{cls}\n"
-            f"Mã HS: `{student.get('student_id', 'N/A')}` • UID: `{student.get('uid', 'Chưa có')}`"
+            f"- Tên học sinh: {student.get('full_name', 'N/A')}\n"
+            f"- Lớp: {student.get('class_name', 'Chưa phân lớp')}\n"
+            f"- UID: {student.get('uid', 'Chưa có')}\n"
+            f"- Trạng thái: Đã đăng ký"
         )
         return embed
 
     logs = get_recent_logs(limit=8)
-    embed = discord.Embed(title="Điểm danh gần đây", color=discord.Color.blurple(), timestamp=datetime.now())
+    embed = discord.Embed(title="Lịch Sử Điểm Danh", color=discord.Color.blurple())
     if not logs:
-        embed.description = "*Chưa có lượt điểm danh nào.*"
+        embed.description = "- Trạng thái: Chưa có lượt điểm danh nào được ghi nhận"
     else:
-        lines = [
-            f"• **{log.get('full_name') or log.get('uid')}** ({log.get('class_name', '')}) — `{str(log.get('timestamp', ''))[-8:]}`"
-            for log in logs
-        ]
+        lines = []
+        for log in logs:
+            name = log.get("full_name") or log.get("uid")
+            cls = f" ({log.get('class_name')})" if log.get("class_name") else ""
+            time_str = _format_event_time(log.get("timestamp"))
+            lines.append(f"- {name}{cls} - {time_str} (UID: `{log.get('uid')}`)")
         embed.description = "\n".join(lines)
     return embed
 
@@ -250,16 +254,31 @@ def _build_diemdanh_embed(hs: str | None) -> discord.Embed:
 def _build_trangthai_embed() -> discord.Embed:
     metrics = get_stats()
     readers = get_active_esp32_readers()
-    embed = discord.Embed(title="Trạng thái hệ thống", color=discord.Color.blurple(), timestamp=datetime.now())
+    embed = discord.Embed(title="Trạng Thái Hệ Thống", color=discord.Color.blurple())
     lines = [
-        f"• **Điểm danh hôm nay:** {metrics['today_scans']} lượt",
-        f"• **Tổng học sinh:** {metrics['total_students']}",
-        f"• **Cơ sở dữ liệu:** `{metrics['active_database']}`",
-        f"• **Đầu đọc online:** {len(readers)}",
+        f"- Điểm danh hôm nay: {metrics['today_scans']} lượt",
+        f"- Tổng học sinh: {metrics['total_students']}",
+        f"- Cơ sở dữ liệu: {metrics['active_database']}",
+        f"- Đầu đọc online: {len(readers)} thiết bị",
     ]
     if metrics.get("failsafe_active"):
-        lines.append("⚠️ *Đang sử dụng CSDL dự phòng (Fail-Safe)*")
+        lines.append("- Cảnh báo: Đang sử dụng CSDL dự phòng (Fail-Safe)")
     embed.description = "\n".join(lines)
+    return embed
+
+
+def _build_xoathe_embed(uid: str) -> discord.Embed:
+    clean_uid = uid.strip().upper()
+    success = delete_card(clean_uid)
+    if success:
+        embed = discord.Embed(title="Xóa Thẻ Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- UID: {clean_uid}\n"
+            f"- Trạng thái: Đã xóa khỏi hệ thống"
+        )
+    else:
+        embed = discord.Embed(title="Xóa Thẻ Thất Bại", color=discord.Color.red())
+        embed.description = f"Lí Do: Không tìm thấy thẻ có UID {clean_uid} trong cơ sở dữ liệu"
     return embed
 
 
@@ -290,11 +309,78 @@ async def on_ready() -> None:
         _worker_task = bot.loop.create_task(_attendance_event_worker())
 
 
-@bot.tree.command(name="dangkythe", description="Tìm học sinh trong CSDL (tạo hồ sơ trống nếu chưa có) và gán thẻ NFC vừa quẹt")
-@app_commands.describe(hs="Mã học sinh hoặc Tên học sinh cần đăng ký")
+@bot.tree.command(name="dangky", description="Đăng ký thẻ học sinh (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ trên thiết bị)")
+@app_commands.describe(
+    type="1: Nhập UID thẳng trên bot | 2: Quẹt thẻ trên thiết bị",
+    ten_hs="Họ và tên học sinh",
+    uid="Mã UID thẻ (tùy chọn nhập nhanh cho Type 1)",
+    lop="Lớp học của học sinh (tùy chọn)",
+)
+@app_commands.choices(
+    type=[
+        app_commands.Choice(name="1 - Nhập UID thẳng trên bot", value=1),
+        app_commands.Choice(name="2 - Quẹt thẻ trên thiết bị kết nối", value=2),
+    ]
+)
+async def slash_dangky(
+    interaction: discord.Interaction,
+    type: app_commands.Choice[int],
+    ten_hs: str,
+    uid: str | None = None,
+    lop: str | None = None,
+) -> None:
+    class_name = lop.strip() if lop else "Chưa phân lớp"
+    name = ten_hs.strip()
+
+    if type.value == 1:
+        if uid:
+            clean_uid = uid.strip().upper()
+            if len(clean_uid) < 4:
+                fail_embed = discord.Embed(title="Đăng Ký Thất Bại", color=discord.Color.red())
+                fail_embed.description = "Lí Do: Mã UID không hợp lệ (cần ít nhất 4 ký tự)"
+                await interaction.response.send_message(embed=fail_embed)
+                return
+            saved, _ = register_or_update_student(full_name=name, uid=clean_uid, class_name=class_name)
+            embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+            embed.description = (
+                f"- Tên học sinh: {saved['full_name']}\n"
+                f"- Lớp: {saved['class_name']}\n"
+                f"- UID: {saved['uid']}\n"
+                f"- Phương thức: Trực tiếp (Bot)"
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            modal = RegisterType1Modal()
+            modal.name_input.default = name
+            if lop:
+                modal.class_input.default = lop
+            await interaction.response.send_modal(modal)
+
+    elif type.value == 2:
+        pending = get_pending_card()
+        if pending:
+            p_uid = pending["uid"]
+            dev = pending.get("device_id", "ESP32")
+            clear_pending_card()
+            saved, _ = register_or_update_student(full_name=name, uid=p_uid, class_name=class_name)
+            embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+            embed.description = (
+                f"- Tên học sinh: {saved['full_name']}\n"
+                f"- Lớp: {saved['class_name']}\n"
+                f"- UID: {saved['uid']}\n"
+                f"- Thiết bị: {dev}"
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            embed, view = _build_waiting_card_view(name, class_name)
+            await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="dangkythe", description="Gán thẻ vừa quẹt cho học sinh (Tương đương /dangky type 2)")
+@app_commands.describe(hs="Tên hoặc mã học sinh")
 async def slash_dangkythe(interaction: discord.Interaction, hs: str) -> None:
-    embed, view = _build_dangkythe_embed(hs)
-    await interaction.response.send_message(embed=embed, view=view) if view else await interaction.response.send_message(embed=embed)
+    type_choice = app_commands.Choice(name="2 - Quẹt thẻ trên thiết bị kết nối", value=2)
+    await slash_dangky(interaction, type_choice, ten_hs=hs)
 
 
 @bot.tree.command(name="ketnoi", description="Yêu cầu Backend chủ động dò tìm và kết nối tới thiết bị ESP32 trên LAN")
@@ -310,15 +396,11 @@ async def slash_help(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="themoi", description="Xem thẻ chưa đăng ký vừa quẹt gần nhất tại đầu đọc ESP32")
 async def slash_themoi(interaction: discord.Interaction) -> None:
-    embed = _build_themoi_embed()
-    if embed:
-        await interaction.response.send_message(embed=embed)
-    else:
-        await interaction.response.send_message("Hiện không có thẻ chưa đăng ký nào trong bộ nhớ tạm.")
+    await interaction.response.send_message(embed=_build_themoi_embed())
 
 
 @bot.tree.command(name="diemdanh", description="Tra cứu thông tin và lịch sử điểm danh của học sinh")
-@app_commands.describe(hs="Mã học sinh hoặc UID cần tra cứu (để trống để xem toàn trường)")
+@app_commands.describe(hs="Mã học sinh hoặc tên cần tra cứu (để trống để xem danh sách gần nhất)")
 async def slash_diemdanh(interaction: discord.Interaction, hs: str | None = None) -> None:
     await interaction.response.send_message(embed=_build_diemdanh_embed(hs))
 
@@ -331,16 +413,13 @@ async def slash_trangthai(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="xoathe", description="Xóa đăng ký thẻ học sinh khỏi hệ thống")
 @app_commands.describe(uid="Mã UID của thẻ cần xóa")
 async def slash_xoathe(interaction: discord.Interaction, uid: str) -> None:
-    await interaction.response.send_message(f"Đã xóa thành công thẻ có UID: `{uid}`" if delete_card(uid) else f"Không tìm thấy thẻ có UID: `{uid}` để xóa.")
+    await interaction.response.send_message(embed=_build_xoathe_embed(uid))
 
 
 @bot.tree.command(name="panel", description="Mở bảng điều khiển tương tác trực quan")
 async def slash_panel(interaction: discord.Interaction) -> None:
-    embed = discord.Embed(
-        title="Bảng điều khiển NFC",
-        description="Chọn thao tác bên dưới:",
-        color=discord.Color.blurple(),
-    )
+    embed = discord.Embed(title="Bảng Điều Khiển NFC", color=discord.Color.blurple())
+    embed.description = "- Hướng dẫn: Chọn thao tác bên dưới để thực hiện nhanh"
     await interaction.response.send_message(embed=embed, view=RegistrationPanelView())
 
 
@@ -349,10 +428,65 @@ async def cmd_help(ctx: commands.Context) -> None:
     await ctx.send(embed=_build_help_embed())
 
 
+@bot.command(name="dangky")
+async def cmd_dangky(
+    ctx: commands.Context,
+    type_val: int = 1,
+    ten_hs: str = "",
+    uid: str | None = None,
+    lop: str | None = None,
+) -> None:
+    if not ten_hs:
+        embed = discord.Embed(title="Hướng Dẫn Lệnh", color=discord.Color.blurple())
+        embed.description = (
+            "- Cú pháp: `!dangky <type> \"<tên hs>\" [uid] [lớp]`\n"
+            "- Type 1: `!dangky 1 \"Nguyễn Văn An\" E2801102 12A1`\n"
+            "- Type 2: `!dangky 2 \"Nguyễn Văn An\"` (Quẹt thẻ trên đầu đọc)"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    class_name = lop.strip() if lop else "Chưa phân lớp"
+    name = ten_hs.strip()
+
+    if type_val == 1:
+        if not uid:
+            embed = discord.Embed(title="Đăng Ký Thất Bại", color=discord.Color.red())
+            embed.description = "Lí Do: Type 1 yêu cầu cung cấp mã UID (Ví dụ: `!dangky 1 \"Tên HS\" UID`)"
+            await ctx.send(embed=embed)
+            return
+        saved, _ = register_or_update_student(full_name=name, uid=uid.strip(), class_name=class_name)
+        embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Tên học sinh: {saved['full_name']}\n"
+            f"- Lớp: {saved['class_name']}\n"
+            f"- UID: {saved['uid']}\n"
+            f"- Phương thức: Trực tiếp (Bot)"
+        )
+        await ctx.send(embed=embed)
+    elif type_val == 2:
+        pending = get_pending_card()
+        if pending:
+            p_uid = pending["uid"]
+            dev = pending.get("device_id", "ESP32")
+            clear_pending_card()
+            saved, _ = register_or_update_student(full_name=name, uid=p_uid, class_name=class_name)
+            embed = discord.Embed(title="Đăng Ký Thành Công", color=discord.Color.green())
+            embed.description = (
+                f"- Tên học sinh: {saved['full_name']}\n"
+                f"- Lớp: {saved['class_name']}\n"
+                f"- UID: {saved['uid']}\n"
+                f"- Thiết bị: {dev}"
+            )
+            await ctx.send(embed=embed)
+        else:
+            embed, view = _build_waiting_card_view(name, class_name)
+            await ctx.send(embed=embed, view=view)
+
+
 @bot.command(name="dangkythe")
 async def cmd_dangkythe(ctx: commands.Context, *, hs: str) -> None:
-    embed, view = _build_dangkythe_embed(hs)
-    await ctx.send(embed=embed, view=view) if view else await ctx.send(embed=embed)
+    await cmd_dangky(ctx, type_val=2, ten_hs=hs)
 
 
 @bot.command(name="ketnoi")
@@ -363,15 +497,11 @@ async def cmd_ketnoi(ctx: commands.Context) -> None:
 
 @bot.command(name="themoi", aliases=["lastcard"])
 async def cmd_themoi(ctx: commands.Context) -> None:
-    embed = _build_themoi_embed()
-    if embed:
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("Chưa có thẻ mới nào quẹt trên đầu đọc.")
+    await ctx.send(embed=_build_themoi_embed())
 
 
 @bot.command(name="diemdanh", aliases=["check"])
-async def cmd_diemdanh(ctx: commands.Context, hs: str | None = None) -> None:
+async def cmd_diemdanh(ctx: commands.Context, *, hs: str | None = None) -> None:
     await ctx.send(embed=_build_diemdanh_embed(hs))
 
 
@@ -382,17 +512,15 @@ async def cmd_trangthai(ctx: commands.Context) -> None:
 
 @bot.command(name="xoathe", aliases=["del"])
 async def cmd_xoathe(ctx: commands.Context, uid: str) -> None:
-    await ctx.send(f"Đã xóa thẻ `{uid}`." if delete_card(uid) else f"Không tìm thấy thẻ `{uid}`.")
+    await ctx.send(embed=_build_xoathe_embed(uid))
 
 
 @bot.command(name="panel")
 async def cmd_panel(ctx: commands.Context) -> None:
-    embed = discord.Embed(
-        title="Bảng điều khiển NFC",
-        description="Chọn thao tác bên dưới:",
-        color=discord.Color.blurple(),
-    )
+    embed = discord.Embed(title="Bảng Điều Khiển NFC", color=discord.Color.blurple())
+    embed.description = "- Hướng dẫn: Chọn thao tác bên dưới để thực hiện nhanh"
     await ctx.send(embed=embed, view=RegistrationPanelView())
+
 
 
 def _safe_enqueue(event: dict[str, Any]) -> None:

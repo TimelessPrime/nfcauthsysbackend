@@ -59,8 +59,53 @@ def get_or_create_blank_student(query: str, uid: str | None = None) -> tuple[dic
     return created, True
 
 
+import re
+
+
+def register_or_update_student(
+    full_name: str,
+    uid: str,
+    class_name: str | None = None,
+    student_id: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    clean_uid = _normalize_uid(uid)
+    name = full_name.strip()
+    cls = (class_name or "Chưa phân lớp").strip()
+
+    existing_student = None
+    if student_id:
+        existing_student = find_student(student_id)
+    if not existing_student:
+        existing_student = find_student(name)
+
+    is_new = existing_student is None
+
+    if existing_student:
+        target_sid = student_id.strip() if student_id else existing_student.get("student_id", "HS001")
+        old_uid = existing_student.get("uid")
+        if old_uid and old_uid != clean_uid:
+            db.delete_student(old_uid)
+    else:
+        if student_id:
+            target_sid = student_id.strip()
+        else:
+            all_s = db.get_all_students()
+            nums = [int(m.group(1)) for s in all_s if (m := re.search(r"HS(\d+)", s.get("student_id", "")))]
+            next_num = (max(nums) + 1) if nums else (len(all_s) + 1)
+            target_sid = f"HS{next_num:03d}"
+
+    saved = db.add_student(
+        uid=clean_uid,
+        student_id=target_sid,
+        full_name=name,
+        class_name=cls,
+    )
+    return saved, is_new
+
+
 def delete_card(uid: str) -> bool:
     return db.delete_student(_normalize_uid(uid))
+
 
 
 def get_stats() -> dict[str, Any]:

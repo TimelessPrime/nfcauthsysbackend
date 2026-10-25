@@ -6,6 +6,12 @@ def get_pending_card() -> dict[str, Any] | None:
     return get_last_unknown_card()
 
 
+def clear_pending_card() -> None:
+    from src.connector import clear_last_unknown_card
+    clear_last_unknown_card()
+
+
+
 def register_attendance_hook(callback: Callable[[dict[str, Any]], None]) -> None:
     add_attendance_listener(callback)
 

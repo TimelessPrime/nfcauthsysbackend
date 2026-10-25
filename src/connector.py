@@ -44,6 +44,12 @@ def get_last_unknown_card() -> dict[str, Any] | None:
     return last_unknown_card
 
 
+def clear_last_unknown_card() -> None:
+    global last_unknown_card
+    last_unknown_card = None
+
+
+
 class RateLimiter:
     def __init__(self, max_connections_per_minute: int = 60) -> None:
         self.max_connections = max_connections_per_minute
