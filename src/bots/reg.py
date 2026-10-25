@@ -46,6 +46,8 @@ _event_queue: asyncio.Queue[dict[str, Any]] | None = None
 _bot_loop: asyncio.AbstractEventLoop | None = None
 _worker_task: asyncio.Task[None] | None = None
 _recent_unknown_cards: dict[str, float] = {}
+_recent_notified_students: dict[str, float] = {}
+
 
 
 class RegisterType1Modal(ui.Modal, title="Đăng Ký - Nhập UID (Type 1)"):
@@ -692,10 +694,40 @@ async def _attendance_event_worker() -> None:
             success_events = [e for e in batch if e.get("status") == "SUCCESS" and e.get("student")]
             unknown_events = [e for e in batch if e.get("status") == "UNKNOWN_CARD" and e.get("uid")]
 
-            realtime_events = [e for e in success_events if not e.get("is_offline")]
-            offline_events = [e for e in success_events if e.get("is_offline")]
+            realtime_raw = [e for e in success_events if not e.get("is_offline")]
+            offline_raw = [e for e in success_events if e.get("is_offline")]
+
+            now_loop = asyncio.get_running_loop().time()
+
+            realtime_events = []
+            seen_realtime_uids = set()
+            for ev in realtime_raw:
+                uid = ev.get("uid")
+                if not uid or uid in seen_realtime_uids:
+                    continue
+                seen_realtime_uids.add(uid)
+
+                last_time = _recent_notified_students.get(uid, 0.0)
+                if now_loop - last_time < 15.0:
+                    continue
+
+                _recent_notified_students[uid] = now_loop
+                realtime_events.append(ev)
+
+            if len(_recent_notified_students) > 500:
+                _recent_notified_students = {k: v for k, v in _recent_notified_students.items() if now_loop - v < 60.0}
+
+            offline_events = []
+            seen_offline_uids = set()
+            for ev in offline_raw:
+                uid = ev.get("uid")
+                if not uid or uid in seen_offline_uids:
+                    continue
+                seen_offline_uids.add(uid)
+                offline_events.append(ev)
 
             if realtime_events:
+
                 if len(realtime_events) == 1:
                     ev = realtime_events[0]
                     student = ev.get("student", {})
