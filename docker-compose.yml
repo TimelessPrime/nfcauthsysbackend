@@ -1,0 +1,57 @@
+services:
+  nfc-mysql:
+    image: mysql:latest
+    container_name: nfc-school-auth-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=2000
+      - MYSQL_DATABASE=nfc_attendance
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p2000"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+
+  nfc-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nfc-school-auth-backend
+    restart: unless-stopped
+    depends_on:
+      nfc-mysql:
+        condition: service_healthy
+    ports:
+      - "5000:5000"   # FastAPI HTTP REST API
+      - "1337:1337"   # TCP Socket Connector for ESP32
+    environment:
+      - HOST=0.0.0.0
+      - PORT=5000
+      - TCP_HOST=0.0.0.0
+      - TCP_PORT=1337
+      - AUTH_TOKEN=nfcschool_secret_token_2026
+      - REQUIRE_AUTH=true
+      - DB_TYPE=mysql
+      - DB_HOST=nfc-mysql
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=2000
+      - DB_NAME=nfc_attendance
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./data:/app/data
+      - ./log:/app/log
+      - ./client_log:/app/client_log
+      - ./config:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mysql_data:

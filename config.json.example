@@ -1,0 +1,46 @@
+{
+  "server": {
+    "debug": true,
+    "port": 5000,
+    "host": "0.0.0.0",
+    "reload": true
+  },
+  "tcp_server": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 1337,
+    "use_tls": false,
+    "certfile": "config/cert.pem",
+    "keyfile": "config/key.pem"
+  },
+  "security": {
+    "auth_token": "nfcschool_secret_token_2026",
+    "require_auth": true,
+    "handshake_version": "3-step"
+  },
+  "database": {
+    "type": "mysql",
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "root",
+    "password": "2000",
+    "name": "nfc_attendance",
+    "sqlite_path": "data/attendance.db",
+    "failsafe": {
+      "enabled": true,
+      "user": "nfc_backup",
+      "password": "backup_pass_2026",
+      "host": "127.0.0.1",
+      "port": 3306
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "directory": "log",
+    "app_file": "app.log",
+    "latest_file": "latest.log",
+    "retention_days": 30,
+    "max_file_size_mb": 10,
+    "console": true
+  }
+}
