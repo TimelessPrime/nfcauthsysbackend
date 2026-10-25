@@ -27,6 +27,7 @@ from src.bots.database import (
     get_recent_logs,
     get_stats,
     register_or_update_student,
+    update_student_class,
 )
 from src.logger import get_logger
 
@@ -49,8 +50,8 @@ _recent_unknown_cards: dict[str, float] = {}
 
 class RegisterType1Modal(ui.Modal, title="Đăng Ký - Nhập UID (Type 1)"):
     name_input = ui.TextInput(label="Tên học sinh", placeholder="Ví dụ: Nguyễn Văn An", min_length=2, max_length=50)
+    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1", min_length=1, max_length=20)
     uid_input = ui.TextInput(label="Mã UID Thẻ (Hex)", placeholder="Ví dụ: E2801102", min_length=4, max_length=32)
-    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1 (không bắt buộc)", required=False, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         clean_uid = self.uid_input.value.strip().upper()
@@ -76,7 +77,7 @@ class RegisterType1Modal(ui.Modal, title="Đăng Ký - Nhập UID (Type 1)"):
 
 class RegisterType2Modal(ui.Modal, title="Đăng Ký - Quẹt Thẻ (Type 2)"):
     name_input = ui.TextInput(label="Tên học sinh", placeholder="Ví dụ: Nguyễn Văn An", min_length=2, max_length=50)
-    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1 (không bắt buộc)", required=False, max_length=20)
+    class_input = ui.TextInput(label="Lớp", placeholder="Ví dụ: 12A1", min_length=1, max_length=20)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         name = self.name_input.value.strip()
@@ -99,6 +100,26 @@ class RegisterType2Modal(ui.Modal, title="Đăng Ký - Quẹt Thẻ (Type 2)"):
         else:
             embed, view = _build_waiting_card_view(name, cls)
             await interaction.response.send_message(embed=embed, view=view)
+
+
+class PhanLopModal(ui.Modal, title="Phân Lớp Học Sinh"):
+    hs_input = ui.TextInput(label="Tên học sinh, Mã HS hoặc UID", placeholder="Ví dụ: Nguyễn Văn An hoặc HS001", min_length=2, max_length=50)
+    class_input = ui.TextInput(label="Lớp mới", placeholder="Ví dụ: 12A1", min_length=1, max_length=20)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        updated = update_student_class(self.hs_input.value.strip(), self.class_input.value.strip())
+        if updated:
+            embed = discord.Embed(title="Phân Lớp Thành Công", color=discord.Color.green())
+            embed.description = (
+                f"- Tên học sinh: {updated['full_name']}\n"
+                f"- Lớp: {updated['class_name']}\n"
+                f"- UID: {updated['uid']}"
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            embed = discord.Embed(title="Phân Lớp Thất Bại", color=discord.Color.red())
+            embed.description = f"Lí Do: Không tìm thấy học sinh với thông tin: {self.hs_input.value.strip()}"
+            await interaction.response.send_message(embed=embed)
 
 
 def _build_waiting_card_view(ten_hs: str, lop: str) -> tuple[discord.Embed, ui.View]:
@@ -154,7 +175,11 @@ class RegistrationPanelView(ui.View):
     async def btn_type1_reg(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.send_modal(RegisterType1Modal())
 
-    @ui.button(label="Quét thiết bị", style=discord.ButtonStyle.primary, emoji="📡")
+    @ui.button(label="Phân lớp", style=discord.ButtonStyle.primary, emoji="🏫")
+    async def btn_phanlop(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(PhanLopModal())
+
+    @ui.button(label="Quét thiết bị", style=discord.ButtonStyle.secondary, emoji="📡")
     async def btn_connect(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(embed=_build_ketnoi_embed(trigger_esp32_discovery()), ephemeral=True)
@@ -162,6 +187,7 @@ class RegistrationPanelView(ui.View):
     @ui.button(label="Trạng thái", style=discord.ButtonStyle.success, emoji="📊")
     async def btn_stats(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.send_message(embed=_build_trangthai_embed(), ephemeral=True)
+
 
 
 def _build_ketnoi_embed(report: dict[str, Any]) -> discord.Embed:
@@ -190,7 +216,8 @@ def _build_ketnoi_embed(report: dict[str, Any]) -> discord.Embed:
 def _build_help_embed() -> discord.Embed:
     embed = discord.Embed(title="Danh Sách Lệnh", color=discord.Color.blurple())
     embed.description = (
-        "- `/dangky [type] [tên hs]`: Đăng ký thẻ (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ)\n"
+        "- `/dangky [type] [tên hs] [lớp]`: Đăng ký thẻ (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ)\n"
+        "- `/phanlop [học sinh] [lớp]`: Phân lớp hoặc cập nhật lớp học cho học sinh\n"
         "- `/diemdanh [hs]`: Tra cứu học sinh hoặc xem lịch sử điểm danh\n"
         "- `/themoi`: Xem thẻ chưa đăng ký vừa quẹt trên đầu đọc\n"
         "- `/trangthai`: Xem tình trạng hệ thống và đầu đọc\n"
@@ -199,6 +226,7 @@ def _build_help_embed() -> discord.Embed:
         "- `/panel`: Bảng điều khiển tương tác nhanh"
     )
     return embed
+
 
 
 def _build_themoi_embed() -> discord.Embed:
@@ -313,8 +341,8 @@ async def on_ready() -> None:
 @app_commands.describe(
     type="1: Nhập UID thẳng trên bot | 2: Quẹt thẻ trên thiết bị",
     ten_hs="Họ và tên học sinh",
+    lop="Lớp học của học sinh (Ví dụ: 12A1)",
     uid="Mã UID thẻ (tùy chọn nhập nhanh cho Type 1)",
-    lop="Lớp học của học sinh (tùy chọn)",
 )
 @app_commands.choices(
     type=[
@@ -326,8 +354,8 @@ async def slash_dangky(
     interaction: discord.Interaction,
     type: app_commands.Choice[int],
     ten_hs: str,
+    lop: str = "Chưa phân lớp",
     uid: str | None = None,
-    lop: str | None = None,
 ) -> None:
     class_name = lop.strip() if lop else "Chưa phân lớp"
     name = ten_hs.strip()
@@ -352,8 +380,7 @@ async def slash_dangky(
         else:
             modal = RegisterType1Modal()
             modal.name_input.default = name
-            if lop:
-                modal.class_input.default = lop
+            modal.class_input.default = class_name
             await interaction.response.send_modal(modal)
 
     elif type.value == 2:
@@ -376,11 +403,32 @@ async def slash_dangky(
             await interaction.response.send_message(embed=embed, view=view)
 
 
+@bot.tree.command(name="phanlop", description="Phân lớp / cập nhật lớp học cho học sinh")
+@app_commands.describe(
+    hs="Tên học sinh, mã học sinh hoặc UID cần phân lớp",
+    lop="Tên lớp mới (Ví dụ: 12A1)",
+)
+async def slash_phanlop(interaction: discord.Interaction, hs: str, lop: str) -> None:
+    updated = update_student_class(hs, lop)
+    if updated:
+        embed = discord.Embed(title="Phân Lớp Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Tên học sinh: {updated['full_name']}\n"
+            f"- Lớp: {updated['class_name']}\n"
+            f"- UID: {updated['uid']}"
+        )
+        await interaction.response.send_message(embed=embed)
+    else:
+        embed = discord.Embed(title="Phân Lớp Thất Bại", color=discord.Color.red())
+        embed.description = f"Lí Do: Không tìm thấy học sinh với thông tin: {hs}"
+        await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(name="dangkythe", description="Gán thẻ vừa quẹt cho học sinh (Tương đương /dangky type 2)")
-@app_commands.describe(hs="Tên hoặc mã học sinh")
-async def slash_dangkythe(interaction: discord.Interaction, hs: str) -> None:
+@app_commands.describe(hs="Tên hoặc mã học sinh", lop="Lớp học của học sinh (Ví dụ: 12A1)")
+async def slash_dangkythe(interaction: discord.Interaction, hs: str, lop: str = "Chưa phân lớp") -> None:
     type_choice = app_commands.Choice(name="2 - Quẹt thẻ trên thiết bị kết nối", value=2)
-    await slash_dangky(interaction, type_choice, ten_hs=hs)
+    await slash_dangky(interaction, type_choice, ten_hs=hs, lop=lop)
 
 
 @bot.tree.command(name="ketnoi", description="Yêu cầu Backend chủ động dò tìm và kết nối tới thiết bị ESP32 trên LAN")
@@ -433,15 +481,15 @@ async def cmd_dangky(
     ctx: commands.Context,
     type_val: int = 1,
     ten_hs: str = "",
+    lop: str = "Chưa phân lớp",
     uid: str | None = None,
-    lop: str | None = None,
 ) -> None:
     if not ten_hs:
         embed = discord.Embed(title="Hướng Dẫn Lệnh", color=discord.Color.blurple())
         embed.description = (
-            "- Cú pháp: `!dangky <type> \"<tên hs>\" [uid] [lớp]`\n"
-            "- Type 1: `!dangky 1 \"Nguyễn Văn An\" E2801102 12A1`\n"
-            "- Type 2: `!dangky 2 \"Nguyễn Văn An\"` (Quẹt thẻ trên đầu đọc)"
+            "- Cú pháp: `!dangky <type> \"<tên hs>\" [lớp] [uid]`\n"
+            "- Type 1: `!dangky 1 \"Nguyễn Văn An\" 12A1 E2801102`\n"
+            "- Type 2: `!dangky 2 \"Nguyễn Văn An\" 12A1` (Quẹt thẻ trên đầu đọc)"
         )
         await ctx.send(embed=embed)
         return
@@ -452,7 +500,7 @@ async def cmd_dangky(
     if type_val == 1:
         if not uid:
             embed = discord.Embed(title="Đăng Ký Thất Bại", color=discord.Color.red())
-            embed.description = "Lí Do: Type 1 yêu cầu cung cấp mã UID (Ví dụ: `!dangky 1 \"Tên HS\" UID`)"
+            embed.description = "Lí Do: Type 1 yêu cầu cung cấp mã UID (Ví dụ: `!dangky 1 \"Tên HS\" 12A1 UID`)"
             await ctx.send(embed=embed)
             return
         saved, _ = register_or_update_student(full_name=name, uid=uid.strip(), class_name=class_name)
@@ -484,9 +532,27 @@ async def cmd_dangky(
             await ctx.send(embed=embed, view=view)
 
 
+@bot.command(name="phanlop")
+async def cmd_phanlop(ctx: commands.Context, hs: str, *, lop: str) -> None:
+    updated = update_student_class(hs, lop)
+    if updated:
+        embed = discord.Embed(title="Phân Lớp Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Tên học sinh: {updated['full_name']}\n"
+            f"- Lớp: {updated['class_name']}\n"
+            f"- UID: {updated['uid']}"
+        )
+        await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(title="Phân Lớp Thất Bại", color=discord.Color.red())
+        embed.description = f"Lí Do: Không tìm thấy học sinh với thông tin: {hs}"
+        await ctx.send(embed=embed)
+
+
 @bot.command(name="dangkythe")
-async def cmd_dangkythe(ctx: commands.Context, *, hs: str) -> None:
-    await cmd_dangky(ctx, type_val=2, ten_hs=hs)
+async def cmd_dangkythe(ctx: commands.Context, hs: str, lop: str = "Chưa phân lớp") -> None:
+    await cmd_dangky(ctx, type_val=2, ten_hs=hs, lop=lop)
+
 
 
 @bot.command(name="ketnoi")
@@ -634,12 +700,14 @@ async def _attendance_event_worker() -> None:
                     ev = realtime_events[0]
                     student = ev.get("student", {})
                     name = student.get("full_name", "N/A")
+                    cls = student.get("class_name") or "Chưa phân lớp"
                     uid = ev.get("uid", "N/A")
                     time_str = _format_event_time(ev.get("timestamp"))
 
                     embed = discord.Embed(title="Điểm Danh Thành Công", color=discord.Color.green())
                     embed.description = (
                         f"- Tên học sinh: {name}\n"
+                        f"- Lớp: {cls}\n"
                         f"- Thời Gian: {time_str}\n"
                         f"- UID: {uid}"
                     )
@@ -653,9 +721,10 @@ async def _attendance_event_worker() -> None:
                     for ev in realtime_events[:15]:
                         student = ev.get("student", {})
                         name = student.get("full_name", "N/A")
+                        cls = student.get("class_name") or "Chưa phân lớp"
                         uid = ev.get("uid", "N/A")
                         time_str = _format_event_time(ev.get("timestamp"))
-                        lines.append(f"• **{name}** - {time_str} (UID: `{uid}`)")
+                        lines.append(f"• **{name}** ({cls}) - {time_str} (UID: `{uid}`)")
                     if len(realtime_events) > 15:
                         lines.append(f"... và {len(realtime_events) - 15} học sinh khác")
                     embed.description = "\n".join(lines)
@@ -666,12 +735,14 @@ async def _attendance_event_worker() -> None:
                     ev = offline_events[0]
                     student = ev.get("student", {})
                     name = student.get("full_name", "N/A")
+                    cls = student.get("class_name") or "Chưa phân lớp"
                     uid = ev.get("uid", "N/A")
                     time_str = _format_event_time(ev.get("timestamp"))
 
                     embed = discord.Embed(title="Điểm Danh Thành Công", color=discord.Color.teal())
                     embed.description = (
                         f"- Tên học sinh: {name}\n"
+                        f"- Lớp: {cls}\n"
                         f"- Thời Gian: {time_str}\n"
                         f"- UID: {uid}"
                     )
@@ -685,9 +756,10 @@ async def _attendance_event_worker() -> None:
                     for ev in offline_events[:15]:
                         student = ev.get("student", {})
                         name = student.get("full_name", "N/A")
+                        cls = student.get("class_name") or "Chưa phân lớp"
                         uid = ev.get("uid", "N/A")
                         time_str = _format_event_time(ev.get("timestamp"))
-                        lines.append(f"• **{name}** - {time_str} (UID: `{uid}`)")
+                        lines.append(f"• **{name}** ({cls}) - {time_str} (UID: `{uid}`)")
                     if len(offline_events) > 15:
                         lines.append(f"... và {len(offline_events) - 15} học sinh khác")
                     embed.description = "\n".join(lines)

@@ -103,8 +103,23 @@ def register_or_update_student(
     return saved, is_new
 
 
+def update_student_class(query: str, new_class: str) -> dict[str, Any] | None:
+    student = find_student(query)
+    if not student:
+        return None
+    clean_cls = new_class.strip()
+    updated = db.add_student(
+        uid=student["uid"],
+        student_id=student.get("student_id", "HS001"),
+        full_name=student.get("full_name", "Chưa cập nhật"),
+        class_name=clean_cls,
+    )
+    return updated
+
+
 def delete_card(uid: str) -> bool:
     return db.delete_student(_normalize_uid(uid))
+
 
 
 
