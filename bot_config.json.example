@@ -1,0 +1,15 @@
+{
+  "bot": {
+    "token": "YOUR_DISCORD_BOT_TOKEN_HERE",
+    "prefix": "!",
+    "channel_id": "YOUR_NOTIFICATION_CHANNEL_ID",
+    "guild_id": "YOUR_DISCORD_GUILD_ID_FOR_FAST_SLASH_SYNC",
+    "admin_roles": ["Admin", "Teacher", "BanGiamHieu", "QuanTriVien"],
+    "enable_notifications": true,
+    "notification_channel_id": "",
+    "sync_slash_commands": true,
+    "backend_url": "http://127.0.0.1:5000",
+    "backend_tcp_host": "127.0.0.1",
+    "backend_tcp_port": 1337
+  }
+}
