@@ -668,8 +668,9 @@ async def _attendance_event_worker() -> None:
             logger.warning(f"Could not find notification channel {channel_id}: {e}")
             return
 
-    global _recent_unknown_cards
+    global _recent_unknown_cards, _recent_notified_students
     last_send_time = 0.0
+
 
     while True:
         try:
