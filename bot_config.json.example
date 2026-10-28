@@ -12,6 +12,8 @@
     "enable_notifications": true,
     "notification_channel_id": "",
     "sync_slash_commands": true,
+    "status_interval_minutes": 5,
+    "status_update_mode": "edit",
     "backend_url": "http://127.0.0.1:5000",
     "backend_tcp_host": "127.0.0.1",
     "backend_tcp_port": 1337

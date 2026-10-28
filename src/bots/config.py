@@ -107,8 +107,32 @@ def get_all_channel_ids() -> dict[str, int | None]:
     }
 
 
-def set_channel_id(channel_type: str, channel_id: int | str) -> bool:
+def _persist_key_value(key: str, val: Any) -> bool:
     global _bot_cfg
+    _bot_cfg[key] = val
+    for path in SEARCH_PATHS:
+        try:
+            full_data = {}
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        full_data = json.loads(content)
+            if "bot" in full_data and isinstance(full_data["bot"], dict):
+                full_data["bot"][key] = val
+            else:
+                full_data[key] = val
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(full_data, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def set_channel_id(channel_type: str, channel_id: int | str) -> bool:
     norm_type = channel_type.strip().lower()
     type_keys = {
         "status": "channel_status",
@@ -123,37 +147,60 @@ def set_channel_id(channel_type: str, channel_id: int | str) -> bool:
         return False
 
     val_str = str(channel_id).strip()
-    _bot_cfg[key] = val_str
+    _persist_key_value(key, val_str)
     if key == "channel_noti":
-        _bot_cfg["channel_id"] = val_str
-        _bot_cfg["notification_channel_id"] = val_str
+        _persist_key_value("channel_id", val_str)
+        _persist_key_value("notification_channel_id", val_str)
+    return True
 
-    for path in SEARCH_PATHS:
+
+def get_status_interval_minutes() -> int:
+    env = os.environ.get("DISCORD_STATUS_INTERVAL_MINUTES")
+    if env is not None:
         try:
-            full_data = {}
-            if path.exists():
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content:
-                        full_data = json.loads(content)
-            if "bot" in full_data and isinstance(full_data["bot"], dict):
-                full_data["bot"][key] = val_str
-                if key == "channel_noti":
-                    full_data["bot"]["channel_id"] = val_str
-                    full_data["bot"]["notification_channel_id"] = val_str
-            else:
-                full_data[key] = val_str
-                if key == "channel_noti":
-                    full_data["channel_id"] = val_str
-                    full_data["notification_channel_id"] = val_str
+            return max(0, int(env.strip()))
+        except ValueError:
+            pass
+    raw = _bot_cfg.get("status_interval_minutes", _bot_cfg.get("status_interval", 5))
+    try:
+        return max(0, int(raw))
+    except (ValueError, TypeError):
+        return 5
 
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(full_data, f, indent=2, ensure_ascii=False)
-            return True
-        except Exception:
-            continue
-    return False
+
+def set_status_interval_minutes(minutes: int) -> bool:
+    val = max(0, int(minutes))
+    return _persist_key_value("status_interval_minutes", val)
+
+
+def get_status_update_mode() -> str:
+    env = os.environ.get("DISCORD_STATUS_UPDATE_MODE")
+    if env:
+        return env.strip().lower()
+    return str(_bot_cfg.get("status_update_mode", "edit")).strip().lower()
+
+
+def set_status_update_mode(mode: str) -> bool:
+    norm = mode.strip().lower()
+    if norm not in ("edit", "send"):
+        norm = "edit"
+    return _persist_key_value("status_update_mode", norm)
+
+
+def get_status_message_id() -> int | None:
+    raw = _bot_cfg.get("status_message_id")
+    if raw:
+        try:
+            return int(str(raw).strip())
+        except ValueError:
+            pass
+    return None
+
+
+def set_status_message_id(message_id: int | None) -> bool:
+    val = str(message_id).strip() if message_id else ""
+    return _persist_key_value("status_message_id", val)
+
 
 
 def get_guild_id() -> int | None:

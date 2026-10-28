@@ -17,6 +17,11 @@ from src.bots.config import (
     get_info_channel_id,
     get_all_channel_ids,
     set_channel_id,
+    get_status_interval_minutes,
+    set_status_interval_minutes,
+    get_status_update_mode,
+    get_status_message_id,
+    set_status_message_id,
     is_notifications_enabled,
     is_sync_slash_commands,
 )
@@ -53,6 +58,7 @@ bot = commands.Bot(
 _event_queue: asyncio.Queue[dict[str, Any]] | None = None
 _bot_loop: asyncio.AbstractEventLoop | None = None
 _worker_task: asyncio.Task[None] | None = None
+_status_periodic_task: asyncio.Task[None] | None = None
 _recent_unknown_cards: dict[str, float] = {}
 _recent_notified_students: dict[str, float] = {}
 
@@ -247,13 +253,19 @@ class RegistrationPanelView(ui.View):
             ch = bot.get_channel(ch_id)
             return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
 
+        interval = get_status_interval_minutes()
+        mode_str = "Live Dashboard (Sửa tin nhắn)" if get_status_update_mode() == "edit" else "Định kỳ (Gửi tin mới)"
+        interval_desc = f"Mỗi `{interval}` phút ({mode_str})" if interval > 0 else "Đang tắt"
+
         embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
         embed.description = (
             f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
             f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
             f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
-            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
-            f"💡 *Để gán kênh mới, dùng lệnh:* `/kenh [loai] [#kenh]`"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n"
+            f"- ⏱️ **Tự Động Cập Nhật Trạng Thái**: {interval_desc}\n\n"
+            f"💡 *Để gán kênh mới, dùng lệnh:* `/kenh [loai] [#kenh]`\n"
+            f"💡 *Để đổi chu kỳ cập nhật, dùng:* `/kenh loai:status chu_ky_phut:[phút]`"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -387,6 +399,81 @@ def _build_trangthai_embed() -> discord.Embed:
     return embed
 
 
+def _build_esp32_status_embed(interval_min: int = 5) -> discord.Embed:
+    readers = get_active_esp32_readers()
+    metrics = get_stats()
+    now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+
+    if readers:
+        embed = discord.Embed(
+            title="📡 Bảng Trạng Thái Đầu Đọc ESP32 (Live Dashboard)",
+            color=discord.Color.green(),
+        )
+    else:
+        embed = discord.Embed(
+            title="📡 Bảng Trạng Thái Đầu Đọc ESP32 (Live Dashboard)",
+            color=discord.Color.orange(),
+        )
+
+    mode_text = "Live Dashboard (Sửa tin nhắn)" if get_status_update_mode() == "edit" else "Định kỳ (Gửi tin mới)"
+    desc_lines = [
+        f"⏱️ **Chu kỳ cập nhật:** Mỗi `{interval_min}` phút ({mode_text})",
+        f"🟢 **Đầu đọc đang online:** `{len(readers)}` thiết bị",
+        f"📊 **Điểm danh hôm nay:** `{metrics.get('today_scans', 0)}` lượt",
+        f"👥 **Tổng số học sinh:** `{metrics.get('total_students', 0)}`",
+        f"🗄️ **Cơ sở dữ liệu:** `{metrics.get('active_database', 'MySQL')}`"
+        + (" *(⚠️ Đang dùng Fail-Safe SQLite)*" if metrics.get("failsafe_active") else ""),
+    ]
+    embed.description = "\n".join(desc_lines)
+
+    if readers:
+        for idx, r in enumerate(readers, 1):
+            dev_id = r.get("device_id", f"ESP32_{idx}")
+            ip = r.get("ip", "N/A")
+            auth = "Đã xác thực HMAC" if r.get("authenticated") else "Chưa xác thực"
+            uptime = r.get("uptime_s")
+            rssi = r.get("rssi")
+            heap = r.get("free_heap")
+            pending = r.get("pending_offline", 0)
+
+            dev_lines = [
+                f"• **IP kết nối:** `{ip}` ({auth})",
+            ]
+            if uptime is not None:
+                h = uptime // 3600
+                m = (uptime % 3600) // 60
+                s = uptime % 60
+                uptime_str = f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s"
+                dev_lines.append(f"• **Thời gian hoạt động (Uptime):** `{uptime_str}`")
+
+            if rssi is not None and rssi not in (0, -100):
+                quality = "Rất tốt" if rssi > -60 else ("Tốt" if rssi > -70 else "Yếu")
+                dev_lines.append(f"• **Tín hiệu Wi-Fi:** `{rssi} dBm` ({quality})")
+
+            if heap:
+                dev_lines.append(f"• **Bộ nhớ RAM khả dụng:** `{heap // 1024} KB` free heap")
+
+            if pending > 0:
+                dev_lines.append(f"• **Bản ghi offline chờ đẩy:** `{pending}` bản ghi")
+
+            embed.add_field(
+                name=f"📟 Thiết Bị #{idx}: {dev_id}",
+                value="\n".join(dev_lines),
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="⚠️ Không Có Thiết Bị Kết Nối",
+            value="Hiện tại chưa có đầu đọc ESP32 nào kết nối tới máy chủ.\nKiểm tra nguồn điện và kết nối Wi-Fi của đầu đọc.",
+            inline=False,
+        )
+
+    embed.set_footer(
+        text=f"Cập nhật lúc: {now_str} • Cập nhật kế tiếp sau {interval_min} phút"
+    )
+    return embed
+
+
 def _build_xoathe_embed(uid: str) -> discord.Embed:
     clean_uid = uid.strip().upper()
     success = delete_card(clean_uid)
@@ -404,7 +491,7 @@ def _build_xoathe_embed(uid: str) -> discord.Embed:
 
 @bot.event
 async def on_ready() -> None:
-    global _bot_loop, _event_queue, _worker_task
+    global _bot_loop, _event_queue, _worker_task, _status_periodic_task
     _bot_loop = asyncio.get_running_loop()
     if _event_queue is None:
         _event_queue = asyncio.Queue(maxsize=500)
@@ -427,6 +514,10 @@ async def on_ready() -> None:
 
     if _worker_task is None or _worker_task.done():
         _worker_task = bot.loop.create_task(_attendance_event_worker())
+
+    if _status_periodic_task is None or _status_periodic_task.done():
+        _status_periodic_task = bot.loop.create_task(_status_periodic_worker())
+
 
 
 @bot.tree.command(name="dangky", description="Đăng ký thẻ học sinh (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ trên thiết bị)")
@@ -676,10 +767,11 @@ async def slash_khoidonglai(interaction: discord.Interaction, thiet_bi: str) -> 
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="kenh", description="Thiết lập hoặc tra cứu các kênh Discord chuyên biệt (status, noti, reg, info)")
+@bot.tree.command(name="kenh", description="Thiết lập các kênh Discord chuyên biệt hoặc chu kỳ tự động cập nhật trạng thái")
 @app_commands.describe(
     loai="Loại kênh cần thiết lập (status, noti, reg, info hoặc xem)",
-    kenh="Kênh Discord muốn gán làm nơi nhận tin"
+    kenh="Kênh Discord muốn gán làm nơi nhận tin",
+    chu_ky_phut="Chu kỳ tự động cập nhật bảng trạng thái ESP32 tính theo phút (0 để tắt)"
 )
 @app_commands.choices(loai=[
     app_commands.Choice(name="📡 Kênh Trạng Thái Thiết Bị & Watchdog (status)", value="status"),
@@ -691,27 +783,10 @@ async def slash_khoidonglai(interaction: discord.Interaction, thiet_bi: str) -> 
 async def slash_kenh(
     interaction: discord.Interaction,
     loai: str,
-    kenh: discord.TextChannel | None = None
+    kenh: discord.TextChannel | None = None,
+    chu_ky_phut: int | None = None,
 ) -> None:
     all_channels = get_all_channel_ids()
-
-    if loai == "xem" or kenh is None:
-        def fmt_ch(ch_id: int | None) -> str:
-            if not ch_id:
-                return "*Chưa cấu hình (dùng kênh mặc định)*"
-            ch = bot.get_channel(ch_id)
-            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
-
-        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
-        embed.description = (
-            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
-            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
-            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
-            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
-            f"💡 *Để thay đổi, dùng lệnh:* `/kenh [loai] [#ten-kenh]`"
-        )
-        await interaction.response.send_message(embed=embed)
-        return
 
     is_admin = False
     if interaction.user.guild_permissions.administrator:
@@ -722,11 +797,57 @@ async def slash_kenh(
         if any(r in get_admin_roles() for r in user_roles):
             is_admin = True
 
+    if chu_ky_phut is not None and kenh is None and loai != "xem":
+        if not is_admin:
+            await interaction.response.send_message("❌ Bạn không có quyền quản trị để thay đổi cấu hình chu kỳ.", ephemeral=True)
+            return
+        set_status_interval_minutes(chu_ky_phut)
+        embed = discord.Embed(title="⏱️ Cập Nhật Chu Kỳ Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Chu kỳ tự động cập nhật trạng thái ESP32: **Mỗi {chu_ky_phut} phút**\n"
+            f"- Bảng tin Live Dashboard sẽ tự động cập nhật vào kênh trạng thái đã thiết lập.\n"
+            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+            if chu_ky_phut > 0 else
+            "- Chu kỳ tự động cập nhật trạng thái ESP32: **Đã tắt**\n- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
+    if loai == "xem" or (kenh is None and chu_ky_phut is None):
+        def fmt_ch(ch_id: int | None) -> str:
+            if not ch_id:
+                return "*Chưa cấu hình (dùng kênh mặc định)*"
+            ch = bot.get_channel(ch_id)
+            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
+
+        interval = get_status_interval_minutes()
+        mode_str = "Live Dashboard (Sửa tin nhắn)" if get_status_update_mode() == "edit" else "Định kỳ (Gửi tin mới)"
+        interval_desc = f"Mỗi `{interval}` phút ({mode_str})" if interval > 0 else "Đang tắt"
+
+        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
+        embed.description = (
+            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
+            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
+            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n"
+            f"- ⏱️ **Tự Động Cập Nhật Trạng Thái**: {interval_desc}\n\n"
+            f"💡 *Để gán kênh, dùng:* `/kenh loai:[loai] kenh:[#kenh]`\n"
+            f"💡 *Để đổi chu kỳ cập nhật, dùng:* `/kenh loai:status chu_ky_phut:[phút]`"
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
     if not is_admin:
         await interaction.response.send_message("❌ Bạn không có quyền quản trị để thay đổi cấu hình kênh.", ephemeral=True)
         return
 
-    success = set_channel_id(loai, kenh.id)
+    success = False
+    if kenh is not None:
+        success = set_channel_id(loai, kenh.id)
+    if chu_ky_phut is not None:
+        set_status_interval_minutes(chu_ky_phut)
+        success = True
+
     if success:
         type_names = {
             "status": "📡 Kênh Trạng Thái Thiết Bị & Watchdog",
@@ -735,12 +856,14 @@ async def slash_kenh(
             "info": "ℹ️ Kênh Thông Tin & Tra Cứu",
         }
         name_vi = type_names.get(loai, loai.upper())
-        embed = discord.Embed(title="✅ Thiết Lập Kênh Thành Công", color=discord.Color.green())
-        embed.description = (
-            f"- Loại kênh: **{name_vi}**\n"
-            f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)\n"
-            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
-        )
+        embed = discord.Embed(title="✅ Thiết Lập Thành Công", color=discord.Color.green())
+        lines = [f"- Loại kênh: **{name_vi}**"]
+        if kenh:
+            lines.append(f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)")
+        if chu_ky_phut is not None:
+            lines.append(f"- Chu kỳ cập nhật trạng thái: Mỗi {chu_ky_phut} phút" if chu_ky_phut > 0 else "- Chu kỳ cập nhật trạng thái: Đã tắt")
+        lines.append("- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`")
+        embed.description = "\n".join(lines)
         await interaction.response.send_message(embed=embed)
     else:
         await interaction.response.send_message(f"❌ Không thể lưu cấu hình cho loại kênh `{loai}`.", ephemeral=True)
@@ -864,27 +987,18 @@ async def cmd_panel(ctx: commands.Context) -> None:
 
 
 @bot.command(name="kenh", aliases=["channels", "channel"])
-async def cmd_kenh(ctx: commands.Context, loai: str = "xem", kenh: discord.TextChannel | None = None) -> None:
+async def cmd_kenh(
+    ctx: commands.Context,
+    loai: str = "xem",
+    kenh: discord.TextChannel | None = None,
+    chu_ky_phut: int | None = None,
+) -> None:
     norm_loai = loai.strip().lower()
     all_channels = get_all_channel_ids()
 
-    if norm_loai in ("xem", "list", "show") or kenh is None:
-        def fmt_ch(ch_id: int | None) -> str:
-            if not ch_id:
-                return "*Chưa cấu hình (dùng kênh mặc định)*"
-            ch = bot.get_channel(ch_id)
-            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
-
-        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
-        embed.description = (
-            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
-            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
-            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
-            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
-            f"💡 *Để thay đổi, dùng:* `!kenh <status|noti|reg|info> #ten-kenh` hoặc `/kenh`"
-        )
-        await ctx.send(embed=embed)
-        return
+    if norm_loai.isdigit():
+        chu_ky_phut = int(norm_loai)
+        norm_loai = "chu_ky"
 
     is_admin = False
     if ctx.author.guild_permissions.administrator:
@@ -895,11 +1009,57 @@ async def cmd_kenh(ctx: commands.Context, loai: str = "xem", kenh: discord.TextC
         if any(r in get_admin_roles() for r in user_roles):
             is_admin = True
 
+    if norm_loai in ("chu_ky", "interval") or (chu_ky_phut is not None and kenh is None and norm_loai in ("xem", "list")):
+        if not is_admin:
+            await ctx.send("❌ Bạn không có quyền quản trị để thay đổi cấu hình chu kỳ.")
+            return
+        set_status_interval_minutes(chu_ky_phut)
+        embed = discord.Embed(title="⏱️ Cập Nhật Chu Kỳ Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Chu kỳ tự động cập nhật trạng thái ESP32: **Mỗi {chu_ky_phut} phút**\n"
+            f"- Bảng tin Live Dashboard sẽ tự động cập nhật vào kênh trạng thái đã thiết lập.\n"
+            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+            if chu_ky_phut > 0 else
+            "- Chu kỳ tự động cập nhật trạng thái ESP32: **Đã tắt**\n- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    if norm_loai in ("xem", "list", "show") or (kenh is None and chu_ky_phut is None):
+        def fmt_ch(ch_id: int | None) -> str:
+            if not ch_id:
+                return "*Chưa cấu hình (dùng kênh mặc định)*"
+            ch = bot.get_channel(ch_id)
+            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
+
+        interval = get_status_interval_minutes()
+        mode_str = "Live Dashboard (Sửa tin nhắn)" if get_status_update_mode() == "edit" else "Định kỳ (Gửi tin mới)"
+        interval_desc = f"Mỗi `{interval}` phút ({mode_str})" if interval > 0 else "Đang tắt"
+
+        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
+        embed.description = (
+            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
+            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
+            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n"
+            f"- ⏱️ **Tự Động Cập Nhật Trạng Thái**: {interval_desc}\n\n"
+            f"💡 *Để thay đổi kênh, dùng:* `!kenh <status|noti|reg|info> #ten-kenh` hoặc `/kenh`\n"
+            f"💡 *Để đổi chu kỳ cập nhật, dùng:* `!kenh chu_ky [số_phút]`"
+        )
+        await ctx.send(embed=embed)
+        return
+
     if not is_admin:
         await ctx.send("❌ Bạn không có quyền quản trị để thay đổi cấu hình kênh.")
         return
 
-    success = set_channel_id(norm_loai, kenh.id)
+    success = False
+    if kenh is not None:
+        success = set_channel_id(norm_loai, kenh.id)
+    if chu_ky_phut is not None:
+        set_status_interval_minutes(chu_ky_phut)
+        success = True
+
     if success:
         type_names = {
             "status": "📡 Kênh Trạng Thái Thiết Bị & Watchdog",
@@ -909,11 +1069,13 @@ async def cmd_kenh(ctx: commands.Context, loai: str = "xem", kenh: discord.TextC
         }
         name_vi = type_names.get(norm_loai, norm_loai.upper())
         embed = discord.Embed(title="✅ Thiết Lập Kênh Thành Công", color=discord.Color.green())
-        embed.description = (
-            f"- Loại kênh: **{name_vi}**\n"
-            f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)\n"
-            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
-        )
+        lines = [f"- Loại kênh: **{name_vi}**"]
+        if kenh:
+            lines.append(f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)")
+        if chu_ky_phut is not None:
+            lines.append(f"- Chu kỳ cập nhật trạng thái: Mỗi {chu_ky_phut} phút" if chu_ky_phut > 0 else "- Chu kỳ cập nhật trạng thái: Đã tắt")
+        lines.append("- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`")
+        embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
     else:
         await ctx.send(f"❌ Không thể lưu cấu hình cho loại kênh `{loai}`. Loại hợp lệ: `status`, `noti`, `reg`, `info`.")
@@ -1311,6 +1473,58 @@ async def _attendance_event_worker() -> None:
         except Exception as e:
             logger.warning(f"Error broadcasting event: {e}")
             await asyncio.sleep(1)
+
+
+async def _status_periodic_worker() -> None:
+    await bot.wait_until_ready()
+    # Chờ 5 giây sau khi bot kết nối để các đầu đọc ESP32 hoàn tất kết nối socket
+    await asyncio.sleep(5)
+
+    while not bot.is_closed():
+        try:
+            interval_min = get_status_interval_minutes()
+            if interval_min <= 0:
+                await asyncio.sleep(15)
+                continue
+
+            status_channel = (await _resolve_channel(get_status_channel_id())) or (await _resolve_channel(get_noti_channel_id()))
+            if status_channel:
+                embed = _build_esp32_status_embed(interval_min)
+                mode = get_status_update_mode()
+                msg_id = get_status_message_id()
+
+                if mode == "edit" and msg_id:
+                    try:
+                        msg = await status_channel.fetch_message(msg_id)
+                        await msg.edit(embed=embed)
+                    except discord.NotFound:
+                        new_msg = await status_channel.send(embed=embed)
+                        set_status_message_id(new_msg.id)
+                    except Exception as e:
+                        logger.warning(f"Could not edit periodic status message: {e}")
+                        new_msg = await status_channel.send(embed=embed)
+                        set_status_message_id(new_msg.id)
+                elif mode == "edit" and not msg_id:
+                    new_msg = await status_channel.send(embed=embed)
+                    set_status_message_id(new_msg.id)
+                else:
+                    await status_channel.send(embed=embed)
+
+            total_sleep = interval_min * 60
+            elapsed = 0
+            while elapsed < total_sleep:
+                if bot.is_closed():
+                    break
+                await asyncio.sleep(5)
+                elapsed += 5
+                new_interval = get_status_interval_minutes()
+                if new_interval != interval_min:
+                    break
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in status periodic worker: {e}", exc_info=True)
+            await asyncio.sleep(15)
 
 
 async def start_discord_bot() -> None:

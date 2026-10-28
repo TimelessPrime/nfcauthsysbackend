@@ -162,6 +162,8 @@ Hệ thống đã được đóng gói tối ưu trên nền tảng **Python 3.1
     "channel_noti": "ID_KENH_DIEM_DANH",
     "channel_reg": "ID_KENH_DANG_KY_THE",
     "channel_info": "ID_KENH_THONG_TIN",
+    "status_interval_minutes": 5,
+    "status_update_mode": "edit",
     "admin_roles": ["Admin", "Teacher"],
     "enable_notifications": true
   }
