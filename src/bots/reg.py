@@ -11,6 +11,12 @@ from src.bots.config import (
     get_discord_token,
     get_guild_id,
     get_notification_channel_id,
+    get_noti_channel_id,
+    get_status_channel_id,
+    get_reg_channel_id,
+    get_info_channel_id,
+    get_all_channel_ids,
+    set_channel_id,
     is_notifications_enabled,
     is_sync_slash_commands,
 )
@@ -232,6 +238,25 @@ class RegistrationPanelView(ui.View):
     async def btn_stats(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.send_message(embed=_build_trangthai_embed(), ephemeral=True)
 
+    @ui.button(label="Kênh hệ thống", style=discord.ButtonStyle.secondary, emoji="📋")
+    async def btn_channels(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        all_channels = get_all_channel_ids()
+        def fmt_ch(ch_id: int | None) -> str:
+            if not ch_id:
+                return "*Chưa cấu hình (dùng kênh mặc định)*"
+            ch = bot.get_channel(ch_id)
+            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
+
+        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
+        embed.description = (
+            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
+            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
+            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
+            f"💡 *Để gán kênh mới, dùng lệnh:* `/kenh [loai] [#kenh]`"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 def _build_ketnoi_embed(report: dict[str, Any]) -> discord.Embed:
@@ -265,6 +290,7 @@ def _build_help_embed() -> discord.Embed:
         "- `/diemdanh [hs]`: Tra cứu học sinh hoặc xem lịch sử điểm danh\n"
         "- `/cauhinh`: Cấu hình động từ xa cho đầu đọc (Cooldown, Còi, Vị trí, Wi-Fi)\n"
         "- `/khoidonglai [thiết bị]`: Khởi động lại (Reboot) đầu đọc ESP32 từ xa\n"
+        "- `/kenh [loai] [kenh]`: Thiết lập hoặc tra cứu các kênh Discord (status, noti, reg, info)\n"
         "- `/themoi`: Xem thẻ chưa đăng ký vừa quẹt trên đầu đọc\n"
         "- `/trangthai`: Xem tình trạng hệ thống và đầu đọc\n"
         "- `/ketnoi`: Quét và kiểm tra kết nối đầu đọc ESP32\n"
@@ -650,6 +676,76 @@ async def slash_khoidonglai(interaction: discord.Interaction, thiet_bi: str) -> 
     await interaction.response.send_message(embed=embed)
 
 
+@bot.tree.command(name="kenh", description="Thiết lập hoặc tra cứu các kênh Discord chuyên biệt (status, noti, reg, info)")
+@app_commands.describe(
+    loai="Loại kênh cần thiết lập (status, noti, reg, info hoặc xem)",
+    kenh="Kênh Discord muốn gán làm nơi nhận tin"
+)
+@app_commands.choices(loai=[
+    app_commands.Choice(name="📡 Kênh Trạng Thái Thiết Bị & Watchdog (status)", value="status"),
+    app_commands.Choice(name="🔔 Kênh Thông Báo Điểm Danh (noti)", value="noti"),
+    app_commands.Choice(name="📝 Kênh Đăng Ký Thẻ Học Sinh (reg)", value="reg"),
+    app_commands.Choice(name="ℹ️ Kênh Thông Tin & Tra Cứu (info)", value="info"),
+    app_commands.Choice(name="📋 Xem Danh Sách Kênh Đang Cấu Hình (xem)", value="xem"),
+])
+async def slash_kenh(
+    interaction: discord.Interaction,
+    loai: str,
+    kenh: discord.TextChannel | None = None
+) -> None:
+    all_channels = get_all_channel_ids()
+
+    if loai == "xem" or kenh is None:
+        def fmt_ch(ch_id: int | None) -> str:
+            if not ch_id:
+                return "*Chưa cấu hình (dùng kênh mặc định)*"
+            ch = bot.get_channel(ch_id)
+            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
+
+        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
+        embed.description = (
+            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
+            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
+            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
+            f"💡 *Để thay đổi, dùng lệnh:* `/kenh [loai] [#ten-kenh]`"
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+
+    is_admin = False
+    if interaction.user.guild_permissions.administrator:
+        is_admin = True
+    else:
+        user_roles = [r.name for r in getattr(interaction.user, "roles", [])]
+        from src.bots.config import get_admin_roles
+        if any(r in get_admin_roles() for r in user_roles):
+            is_admin = True
+
+    if not is_admin:
+        await interaction.response.send_message("❌ Bạn không có quyền quản trị để thay đổi cấu hình kênh.", ephemeral=True)
+        return
+
+    success = set_channel_id(loai, kenh.id)
+    if success:
+        type_names = {
+            "status": "📡 Kênh Trạng Thái Thiết Bị & Watchdog",
+            "noti": "🔔 Kênh Thông Báo Điểm Danh",
+            "reg": "📝 Kênh Đăng Ký Thẻ Học Sinh",
+            "info": "ℹ️ Kênh Thông Tin & Tra Cứu",
+        }
+        name_vi = type_names.get(loai, loai.upper())
+        embed = discord.Embed(title="✅ Thiết Lập Kênh Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Loại kênh: **{name_vi}**\n"
+            f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)\n"
+            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+        )
+        await interaction.response.send_message(embed=embed)
+    else:
+        await interaction.response.send_message(f"❌ Không thể lưu cấu hình cho loại kênh `{loai}`.", ephemeral=True)
+
+
 @bot.command(name="help")
 async def cmd_help(ctx: commands.Context) -> None:
     await ctx.send(embed=_build_help_embed())
@@ -767,6 +863,63 @@ async def cmd_panel(ctx: commands.Context) -> None:
     await ctx.send(embed=embed, view=RegistrationPanelView())
 
 
+@bot.command(name="kenh", aliases=["channels", "channel"])
+async def cmd_kenh(ctx: commands.Context, loai: str = "xem", kenh: discord.TextChannel | None = None) -> None:
+    norm_loai = loai.strip().lower()
+    all_channels = get_all_channel_ids()
+
+    if norm_loai in ("xem", "list", "show") or kenh is None:
+        def fmt_ch(ch_id: int | None) -> str:
+            if not ch_id:
+                return "*Chưa cấu hình (dùng kênh mặc định)*"
+            ch = bot.get_channel(ch_id)
+            return f"<#{ch_id}> (`{ch.name if ch else ch_id}`)"
+
+        embed = discord.Embed(title="📋 Cấu Hình Kênh Discord Hệ Thống", color=discord.Color.blurple())
+        embed.description = (
+            f"- 📡 **Kênh Trạng Thái Thiết Bị (`status`)**: {fmt_ch(all_channels.get('status'))}\n"
+            f"- 🔔 **Kênh Thông Báo Điểm Danh (`noti`)**: {fmt_ch(all_channels.get('noti'))}\n"
+            f"- 📝 **Kênh Đăng Ký Thẻ (`reg`)**: {fmt_ch(all_channels.get('reg'))}\n"
+            f"- ℹ️ **Kênh Thông Tin Chung (`info`)**: {fmt_ch(all_channels.get('info'))}\n\n"
+            f"💡 *Để thay đổi, dùng:* `!kenh <status|noti|reg|info> #ten-kenh` hoặc `/kenh`"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    is_admin = False
+    if ctx.author.guild_permissions.administrator:
+        is_admin = True
+    else:
+        user_roles = [r.name for r in getattr(ctx.author, "roles", [])]
+        from src.bots.config import get_admin_roles
+        if any(r in get_admin_roles() for r in user_roles):
+            is_admin = True
+
+    if not is_admin:
+        await ctx.send("❌ Bạn không có quyền quản trị để thay đổi cấu hình kênh.")
+        return
+
+    success = set_channel_id(norm_loai, kenh.id)
+    if success:
+        type_names = {
+            "status": "📡 Kênh Trạng Thái Thiết Bị & Watchdog",
+            "noti": "🔔 Kênh Thông Báo Điểm Danh",
+            "reg": "📝 Kênh Đăng Ký Thẻ Học Sinh",
+            "info": "ℹ️ Kênh Thông Tin & Tra Cứu",
+        }
+        name_vi = type_names.get(norm_loai, norm_loai.upper())
+        embed = discord.Embed(title="✅ Thiết Lập Kênh Thành Công", color=discord.Color.green())
+        embed.description = (
+            f"- Loại kênh: **{name_vi}**\n"
+            f"- Kênh được gán: <#{kenh.id}> (`{kenh.name}`)\n"
+            f"- Trạng thái: Đã lưu vĩnh viễn vào file cấu hình `bot_config.json`"
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"❌ Không thể lưu cấu hình cho loại kênh `{loai}`. Loại hợp lệ: `status`, `noti`, `reg`, `info`.")
+
+
+
 
 def _safe_enqueue(event: dict[str, Any]) -> None:
     if _event_queue is not None:
@@ -793,6 +946,8 @@ async def _send_with_ratelimit(
     last_send_time: float,
     min_interval: float = 1.0,
 ) -> float:
+    if not channel:
+        return last_send_time
     now = asyncio.get_running_loop().time()
     wait_time = (last_send_time + min_interval) - now
     if wait_time > 0:
@@ -832,27 +987,37 @@ def _format_event_time(ts: Any) -> str:
     return datetime.now().strftime("%H:%M:%S %d/%m/%Y")
 
 
-async def _attendance_event_worker() -> None:
-    channel_id = get_notification_channel_id()
-    if not channel_id or not is_notifications_enabled():
-        return
-
-    channel = bot.get_channel(channel_id)
-    if not channel:
+async def _resolve_channel(channel_id: int | None) -> discord.TextChannel | None:
+    if not channel_id:
+        return None
+    ch = bot.get_channel(channel_id)
+    if not ch:
         try:
-            channel = await bot.fetch_channel(channel_id)
-        except Exception as e:
-            logger.warning(f"Could not find notification channel {channel_id}: {e}")
-            return
+            ch = await bot.fetch_channel(channel_id)
+        except Exception:
+            return None
+    return ch
+
+
+async def _attendance_event_worker() -> None:
+    if not is_notifications_enabled():
+        return
 
     global _recent_unknown_cards, _recent_notified_students
     last_send_time = 0.0
-
 
     while True:
         try:
             if not _event_queue:
                 await asyncio.sleep(1)
+                continue
+
+            noti_channel = await _resolve_channel(get_noti_channel_id())
+            status_channel = (await _resolve_channel(get_status_channel_id())) or noti_channel
+            reg_channel = (await _resolve_channel(get_reg_channel_id())) or noti_channel
+
+            if not noti_channel and not status_channel and not reg_channel:
+                await asyncio.sleep(2)
                 continue
 
             first_event = await _event_queue.get()
@@ -896,7 +1061,7 @@ async def _attendance_event_worker() -> None:
 
                     embed = discord.Embed(title="⚠️ Cảnh Báo: Đầu Đọc Mất Tín Hiệu", color=discord.Color.red())
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(status_channel, embed, last_send_time)
 
                 elif dev_status == "DEVICE_ONLINE":
                     lines = [
@@ -910,7 +1075,7 @@ async def _attendance_event_worker() -> None:
                         lines.append(f"- Sóng Wi-Fi: {rssi} dBm")
                     embed = discord.Embed(title="✅ Đầu Đọc Đã Hoạt Động Trở Lại", color=discord.Color.green())
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(status_channel, embed, last_send_time)
 
             # Xử lý phản hồi lệnh từ đầu đọc (Config ACK / Reboot ACK)
             cmd_ack_events = [e for e in batch if e.get("action") in ("config_ack", "reboot_ack")]
@@ -935,7 +1100,7 @@ async def _attendance_event_worker() -> None:
 
                     embed = discord.Embed(title="⚙️ Đầu Đọc Đã Lưu & Áp Dụng Cấu Hình", color=discord.Color.blue())
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(status_channel, embed, last_send_time)
 
                 elif action == "reboot_ack":
                     lines = [
@@ -945,7 +1110,7 @@ async def _attendance_event_worker() -> None:
                     ]
                     embed = discord.Embed(title="🔄 Đầu Đọc Đang Khởi Động Lại", color=discord.Color.gold())
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(status_channel, embed, last_send_time)
 
             success_events = [e for e in batch if e.get("status") == "SUCCESS" and e.get("student")]
             unknown_events = [e for e in batch if e.get("status") == "UNKNOWN_CARD" and e.get("uid")]
@@ -999,7 +1164,7 @@ async def _attendance_event_worker() -> None:
                         f"- Thời Gian: {time_str}\n"
                         f"- UID: {uid}"
                     )
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(noti_channel, embed, last_send_time)
                 else:
                     embed = discord.Embed(
                         title=f"Điểm Danh Thành Công ({len(realtime_events)} học sinh)",
@@ -1016,7 +1181,7 @@ async def _attendance_event_worker() -> None:
                     if len(realtime_events) > 15:
                         lines.append(f"... và {len(realtime_events) - 15} học sinh khác")
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(noti_channel, embed, last_send_time)
 
             if offline_events:
                 if len(offline_events) == 1:
@@ -1034,7 +1199,7 @@ async def _attendance_event_worker() -> None:
                         f"- Thời Gian: {time_str}\n"
                         f"- UID: {uid}"
                     )
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(noti_channel, embed, last_send_time)
                 else:
                     embed = discord.Embed(
                         title=f"Điểm Danh Thành Công ({len(offline_events)} học sinh ngoại tuyến)",
@@ -1051,7 +1216,7 @@ async def _attendance_event_worker() -> None:
                     if len(offline_events) > 15:
                         lines.append(f"... và {len(offline_events) - 15} học sinh khác")
                     embed.description = "\n".join(lines)
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(noti_channel, embed, last_send_time)
 
             if unknown_events:
                 now_loop = asyncio.get_running_loop().time()
@@ -1073,12 +1238,12 @@ async def _attendance_event_worker() -> None:
                     uid = ev.get("uid", "N/A")
                     embed = discord.Embed(title="Điểm Danh Thất Bại", color=discord.Color.red())
                     embed.description = f"Lí Do: Thẻ chưa đăng ký (UID: `{uid}`)"
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(reg_channel, embed, last_send_time)
                 elif len(filtered_unknowns) > 1:
                     embed = discord.Embed(title="Điểm Danh Thất Bại", color=discord.Color.red())
                     uids = ", ".join([f"`{e.get('uid')}`" for e in filtered_unknowns[:10]])
                     embed.description = f"Lí Do: {len(filtered_unknowns)} thẻ chưa đăng ký ({uids})"
-                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+                    last_send_time = await _send_with_ratelimit(reg_channel, embed, last_send_time)
 
         except asyncio.CancelledError:
             break
