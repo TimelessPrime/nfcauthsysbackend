@@ -496,6 +496,23 @@ class TCPConnector:
             handler.send_json({"action": "log_ack", "status": "ok", "count": len(entries)})
             return
 
+        if action in ("config_ack", "reboot_ack", "config_info"):
+            device_id = handler.device_id or str(msg.get("device_id", f"ESP32_{handler.address[0]}"))
+            logger.info(f"Received {action} from [{device_id}]: {msg}")
+            payload = {
+                "action": action,
+                "device_id": device_id,
+                "ip": handler.address[0],
+                "data": msg,
+                "timestamp": datetime.now().astimezone().isoformat(),
+            }
+            for listener in list(attendance_listeners):
+                try:
+                    listener(payload)
+                except Exception as e:
+                    logger.warning(f"Error notifying listener about {action}: {e}")
+            return
+
         if action in ("offline_scan", "offline_sync"):
             uid = msg.get("uid")
             if uid:
@@ -615,6 +632,48 @@ class TCPConnector:
                     "pending_offline": getattr(h, "pending_offline", 0),
                 })
             return clients
+
+    def send_command_to_device(self, device_id: str, command: dict[str, Any]) -> dict[str, Any]:
+        with self._clients_lock:
+            if not self.connected_clients:
+                return {
+                    "success": False,
+                    "message": "Hiện không có đầu đọc ESP32 nào đang kết nối trực tuyến tới máy chủ."
+                }
+
+            target = str(device_id).strip()
+            if target.lower() == "all":
+                sent_count = 0
+                for h in self.connected_clients.values():
+                    if h.send_json(command):
+                        sent_count += 1
+                return {
+                    "success": sent_count > 0,
+                    "target": "all",
+                    "sent_count": sent_count,
+                    "total_clients": len(self.connected_clients),
+                    "message": f"Đã gửi lệnh thành công tới {sent_count}/{len(self.connected_clients)} đầu đọc trực tuyến."
+                }
+
+            for h in self.connected_clients.values():
+                h_id = h.device_id or f"ESP32_{h.address[0]}"
+                if (
+                    h_id.lower() == target.lower()
+                    or h.address[0] == target
+                    or (h.device_id and h.device_id.lower() == target.lower())
+                ):
+                    ok = h.send_json(command)
+                    return {
+                        "success": ok,
+                        "device_id": h_id,
+                        "ip": h.address[0],
+                        "message": "Đã gửi lệnh xuống đầu đọc thành công." if ok else "Lỗi truyền dữ liệu qua TCP socket tới đầu đọc."
+                    }
+
+            return {
+                "success": False,
+                "message": f"Không tìm thấy đầu đọc '{target}' trong danh sách thiết bị đang kết nối trực tuyến."
+            }
 
     def discover_and_connect_esp32(self) -> dict[str, Any]:
         from src.mdns_broadcaster import get_local_ip, start_mdns_broadcaster

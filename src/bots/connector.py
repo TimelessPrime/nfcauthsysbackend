@@ -24,3 +24,17 @@ def trigger_esp32_discovery() -> dict[str, Any]:
 def get_active_esp32_readers() -> list[dict[str, Any]]:
     from src.connector import tcp_connector
     return tcp_connector.get_connected_clients()
+
+
+def send_config_update(device_id: str, config_data: dict[str, Any]) -> dict[str, Any]:
+    from src.connector import tcp_connector
+    cmd = {"action": "update_config", "device_id": device_id}
+    cmd.update(config_data)
+    return tcp_connector.send_command_to_device(device_id, cmd)
+
+
+def send_reader_reboot(device_id: str) -> dict[str, Any]:
+    from src.connector import tcp_connector
+    cmd = {"action": "reboot", "device_id": device_id}
+    return tcp_connector.send_command_to_device(device_id, cmd)
+

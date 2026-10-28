@@ -19,6 +19,8 @@ from src.bots.connector import (
     get_active_esp32_readers,
     get_pending_card,
     register_attendance_hook,
+    send_config_update,
+    send_reader_reboot,
     trigger_esp32_discovery,
 )
 from src.bots.database import (
@@ -165,6 +167,42 @@ def _build_waiting_card_view(ten_hs: str, lop: str) -> tuple[discord.Embed, ui.V
     return embed, view
 
 
+class QuickConfigReaderModal(ui.Modal, title="Cấu Hình Đầu Đọc ESP32"):
+    device_id_input = ui.TextInput(label="ID Đầu Đọc (hoặc 'all')", placeholder="Ví dụ: READER_01 hoặc all", min_length=1, max_length=50)
+    cooldown_input = ui.TextInput(label="Cooldown Quẹt Thẻ (ms)", placeholder="Mặc định: 1000", required=False, max_length=6)
+    feedback_input = ui.TextInput(label="Thời lượng Còi & LED (ms)", placeholder="Mặc định: 200", required=False, max_length=6)
+    location_input = ui.TextInput(label="Vị Trí Đặt Máy", placeholder="Ví dụ: Phòng 10A1", required=False, max_length=50)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        target = self.device_id_input.value.strip()
+        payload: dict[str, Any] = {}
+        if self.cooldown_input.value.strip():
+            try:
+                payload["cooldown_ms"] = int(self.cooldown_input.value.strip())
+            except ValueError:
+                pass
+        if self.feedback_input.value.strip():
+            try:
+                payload["feedback_duration_ms"] = int(self.feedback_input.value.strip())
+            except ValueError:
+                pass
+        if self.location_input.value.strip():
+            payload["location"] = self.location_input.value.strip()
+
+        if not payload:
+            await interaction.response.send_message("⚠️ Không có thông số nào được nhập để thay đổi.", ephemeral=True)
+            return
+
+        res = send_config_update(target, payload)
+        if res.get("success"):
+            embed = discord.Embed(title="⚙️ Đã Gửi Cấu Hình Xuống Đầu Đọc", color=discord.Color.blue())
+            embed.description = f"- Thiết bị: **{target}**\n- Kết quả: {res.get('message')}"
+        else:
+            embed = discord.Embed(title="❌ Lỗi Cấu Hình", color=discord.Color.red())
+            embed.description = f"- Lí do: {res.get('message')}"
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class RegistrationPanelView(ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -180,6 +218,10 @@ class RegistrationPanelView(ui.View):
     @ui.button(label="Phân lớp", style=discord.ButtonStyle.primary, emoji="🏫")
     async def btn_phanlop(self, interaction: discord.Interaction, _: ui.Button) -> None:
         await interaction.response.send_modal(PhanLopModal())
+
+    @ui.button(label="Cấu hình đầu đọc", style=discord.ButtonStyle.secondary, emoji="⚙️")
+    async def btn_config(self, interaction: discord.Interaction, _: ui.Button) -> None:
+        await interaction.response.send_modal(QuickConfigReaderModal())
 
     @ui.button(label="Quét thiết bị", style=discord.ButtonStyle.secondary, emoji="📡")
     async def btn_connect(self, interaction: discord.Interaction, _: ui.Button) -> None:
@@ -221,6 +263,8 @@ def _build_help_embed() -> discord.Embed:
         "- `/dangky [type] [tên hs] [lớp]`: Đăng ký thẻ (Type 1: Nhập UID thẳng / Type 2: Quẹt thẻ)\n"
         "- `/phanlop [học sinh] [lớp]`: Phân lớp hoặc cập nhật lớp học cho học sinh\n"
         "- `/diemdanh [hs]`: Tra cứu học sinh hoặc xem lịch sử điểm danh\n"
+        "- `/cauhinh`: Cấu hình động từ xa cho đầu đọc (Cooldown, Còi, Vị trí, Wi-Fi)\n"
+        "- `/khoidonglai [thiết bị]`: Khởi động lại (Reboot) đầu đọc ESP32 từ xa\n"
         "- `/themoi`: Xem thẻ chưa đăng ký vừa quẹt trên đầu đọc\n"
         "- `/trangthai`: Xem tình trạng hệ thống và đầu đọc\n"
         "- `/ketnoi`: Quét và kiểm tra kết nối đầu đọc ESP32\n"
@@ -493,6 +537,119 @@ async def slash_panel(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(embed=embed, view=RegistrationPanelView())
 
 
+async def reader_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    readers = get_active_esp32_readers()
+    choices = [app_commands.Choice(name="Tất cả đầu đọc (all)", value="all")]
+    for r in readers:
+        dev_id = str(r.get("device_id", "ESP32"))
+        ip = str(r.get("ip", ""))
+        label = f"{dev_id} ({ip})"
+        if current.lower() in label.lower() or current.lower() in dev_id.lower():
+            choices.append(app_commands.Choice(name=label, value=dev_id))
+    return choices[:25]
+
+
+@bot.tree.command(name="cauhinh", description="Cấu hình động thông số cho đầu đọc ESP32 từ xa qua mạng TCP")
+@app_commands.autocomplete(thiet_bi=reader_autocomplete)
+@app_commands.describe(
+    thiet_bi="ID đầu đọc (hoặc 'all' cho tất cả thiết bị đang kết nối)",
+    cooldown_ms="Thời gian chờ giữa 2 lần quẹt thẻ (ms, ví dụ: 1500)",
+    feedback_duration_ms="Thời lượng kêu còi & nháy LED phản hồi (ms, ví dụ: 300)",
+    vi_tri="Vị trí đặt thiết bị (ví dụ: Phòng 10A1, Cổng chính)",
+    khoi_dong_lai="Khởi động lại đầu đọc để áp dụng toàn diện (True/False)",
+    wifi_ssid="Tên mạng Wi-Fi mới (nếu muốn chuyển mạng từ xa)",
+    wifi_password="Mật khẩu Wi-Fi mới",
+    server_host="Địa chỉ IP máy chủ backend mới",
+    tcp_port="Cổng TCP máy chủ mới"
+)
+async def slash_cauhinh(
+    interaction: discord.Interaction,
+    thiet_bi: str,
+    cooldown_ms: int | None = None,
+    feedback_duration_ms: int | None = None,
+    vi_tri: str | None = None,
+    khoi_dong_lai: bool = False,
+    wifi_ssid: str | None = None,
+    wifi_password: str | None = None,
+    server_host: str | None = None,
+    tcp_port: int | None = None,
+) -> None:
+    cfg_payload: dict[str, Any] = {}
+    details: list[str] = [f"- Thiết bị mục tiêu: **{thiet_bi}**"]
+
+    if cooldown_ms is not None:
+        if cooldown_ms < 200 or cooldown_ms > 60000:
+            await interaction.response.send_message("❌ `cooldown_ms` không hợp lệ (hỗ trợ từ 200ms đến 60000ms).", ephemeral=True)
+            return
+        cfg_payload["cooldown_ms"] = cooldown_ms
+        details.append(f"- Cooldown quét thẻ: `{cooldown_ms}` ms")
+
+    if feedback_duration_ms is not None:
+        if feedback_duration_ms < 50 or feedback_duration_ms > 5000:
+            await interaction.response.send_message("❌ `feedback_duration_ms` không hợp lệ (hỗ trợ từ 50ms đến 5000ms).", ephemeral=True)
+            return
+        cfg_payload["feedback_duration_ms"] = feedback_duration_ms
+        details.append(f"- Thời lượng phản hồi LED/Còi: `{feedback_duration_ms}` ms")
+
+    if vi_tri is not None and vi_tri.strip():
+        cfg_payload["location"] = vi_tri.strip()
+        details.append(f"- Vị trí đặt máy: `{vi_tri.strip()}`")
+
+    if wifi_ssid is not None and wifi_ssid.strip():
+        cfg_payload["wifi_ssid"] = wifi_ssid.strip()
+        cfg_payload["wifi_password"] = wifi_password or ""
+        details.append(f"- Wi-Fi SSID mới: `{wifi_ssid.strip()}`")
+
+    if server_host is not None and server_host.strip():
+        cfg_payload["server_host"] = server_host.strip()
+        details.append(f"- Server Host mới: `{server_host.strip()}`")
+
+    if tcp_port is not None:
+        cfg_payload["tcp_port"] = tcp_port
+        details.append(f"- TCP Port mới: `{tcp_port}`")
+
+    if khoi_dong_lai:
+        cfg_payload["reboot"] = True
+        details.append("- Khởi động lại sau cấu hình: `Có (Tự reboot sau 1s)`")
+
+    if not cfg_payload:
+        await interaction.response.send_message("⚠️ Bạn chưa chỉ định bất kỳ thông số nào để thay đổi.", ephemeral=True)
+        return
+
+    result = send_config_update(thiet_bi, cfg_payload)
+    if result.get("success"):
+        embed = discord.Embed(title="🚀 Đã Gửi Cấu Hình Xuống Đầu Đọc", color=discord.Color.blue())
+        embed.description = "\n".join(details) + f"\n- Kết quả: {result.get('message', 'Thành công')}"
+        embed.set_footer(text="Cấu hình được lưu tự động vào Flash NVS của ESP32")
+    else:
+        embed = discord.Embed(title="❌ Gửi Cấu Hình Thất Bại", color=discord.Color.red())
+        embed.description = f"- Lí do: {result.get('message', 'Không thể kết nối tới đầu đọc')}"
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="khoidonglai", description="Khởi động lại (Reboot) đầu đọc ESP32 từ xa qua mạng TCP")
+@app_commands.autocomplete(thiet_bi=reader_autocomplete)
+@app_commands.describe(thiet_bi="ID đầu đọc cần khởi động lại (hoặc 'all')")
+async def slash_khoidonglai(interaction: discord.Interaction, thiet_bi: str) -> None:
+    result = send_reader_reboot(thiet_bi)
+    if result.get("success"):
+        embed = discord.Embed(title="🔄 Lệnh Khởi Động Lại Đã Được Gửi", color=discord.Color.gold())
+        embed.description = (
+            f"- Thiết bị: **{thiet_bi}**\n"
+            f"- Kết quả: {result.get('message', 'Thành công')}\n"
+            f"- Lưu ý: Đầu đọc sẽ mất kết nối trong khoảng 3-5 giây để nạp lại hệ thống."
+        )
+    else:
+        embed = discord.Embed(title="❌ Khởi Động Lại Thất Bại", color=discord.Color.red())
+        embed.description = f"- Lí do: {result.get('message', 'Không thể kết nối tới đầu đọc')}"
+
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.command(name="help")
 async def cmd_help(ctx: commands.Context) -> None:
     await ctx.send(embed=_build_help_embed())
@@ -752,6 +909,41 @@ async def _attendance_event_worker() -> None:
                     if rssi is not None and rssi != 0 and rssi != -100:
                         lines.append(f"- Sóng Wi-Fi: {rssi} dBm")
                     embed = discord.Embed(title="✅ Đầu Đọc Đã Hoạt Động Trở Lại", color=discord.Color.green())
+                    embed.description = "\n".join(lines)
+                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+
+            # Xử lý phản hồi lệnh từ đầu đọc (Config ACK / Reboot ACK)
+            cmd_ack_events = [e for e in batch if e.get("action") in ("config_ack", "reboot_ack")]
+            for ack_ev in cmd_ack_events:
+                action = ack_ev.get("action")
+                dev_id = ack_ev.get("device_id", "ESP32")
+                data = ack_ev.get("data", {})
+                time_str = _format_event_time(ack_ev.get("timestamp"))
+
+                if action == "config_ack":
+                    lines = [
+                        f"- Đầu đọc: **{dev_id}**",
+                        "- Trạng thái: ✅ Cấu hình đã được lưu vĩnh viễn vào Flash NVS",
+                    ]
+                    if "cooldown_ms" in data:
+                        lines.append(f"- Cooldown quét thẻ: `{data['cooldown_ms']}` ms")
+                    if "feedback_duration_ms" in data:
+                        lines.append(f"- Thời lượng phản hồi: `{data['feedback_duration_ms']}` ms")
+                    if data.get("location"):
+                        lines.append(f"- Vị trí: `{data['location']}`")
+                    lines.append(f"- Thời gian: {time_str}")
+
+                    embed = discord.Embed(title="⚙️ Đầu Đọc Đã Lưu & Áp Dụng Cấu Hình", color=discord.Color.blue())
+                    embed.description = "\n".join(lines)
+                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+
+                elif action == "reboot_ack":
+                    lines = [
+                        f"- Đầu đọc: **{dev_id}**",
+                        "- Trạng thái: 🔄 Đang thực hiện chu trình khởi động lại hệ thống...",
+                        f"- Thời gian: {time_str}",
+                    ]
+                    embed = discord.Embed(title="🔄 Đầu Đọc Đang Khởi Động Lại", color=discord.Color.gold())
                     embed.description = "\n".join(lines)
                     last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
 
