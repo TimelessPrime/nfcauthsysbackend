@@ -93,6 +93,25 @@ class SimulatedESP32TCP:
                 latency_ms = (time.perf_counter() - t_start) * 1000.0
                 return False, latency_ms, {"error": str(e)}
 
+    def send_ping(self, uptime_s: int = 120, rssi: int = -45) -> bool:
+        with self.lock:
+            try:
+                if not self.sock:
+                    return False
+                msg = json.dumps({
+                    "action": "ping",
+                    "device_id": self.device_id,
+                    "uptime_s": uptime_s,
+                    "free_heap": 182400,
+                    "rssi": rssi,
+                    "pending_offline": 0,
+                }) + "\n"
+                self.sock.sendall(msg.encode("utf-8"))
+                resp = self.sock.recv(1024).decode("utf-8")
+                return "pong" in resp
+            except Exception:
+                return False
+
     def close(self):
         if self.sock:
             try:

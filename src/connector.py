@@ -80,7 +80,12 @@ class ClientHandler:
         self.client_nonce: str | None = None
         self.server_nonce: str | None = None
         self.last_activity = time.time()
+        self.last_heartbeat = time.time()
         self.connected_at = time.time()
+        self.uptime_s: int | None = None
+        self.free_heap: int | None = None
+        self.rssi: int | None = None
+        self.pending_offline: int = 0
 
         try:
             self.client.settimeout(SOCKET_TIMEOUT_SECONDS)
@@ -152,6 +157,10 @@ class ClientHandler:
 
     def close(self) -> None:
         try:
+            self.client.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
             self.client.close()
         except OSError:
             pass
@@ -172,9 +181,12 @@ class TCPConnector:
         self._ssl_context: ssl.SSLContext | None = None
         self.connected_clients: dict[str, ClientHandler] = {}
         self._clients_lock = threading.Lock()
+        self._device_states: dict[str, str] = {}
+        self._device_info: dict[str, dict[str, Any]] = {}
         self._server_socket: socket.socket | None = None
         self._running = False
         self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start listening on TCP socket in background thread."""
@@ -207,6 +219,10 @@ class TCPConnector:
 
             self._thread = threading.Thread(target=self._listen_loop, daemon=True)
             self._thread.start()
+
+            self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+            self._watchdog_thread.start()
+            logger.info("[Device Watchdog] Background heartbeat watchdog started (checking every 5s)")
         except OSError as e:
             logger.error(f"Failed to bind TCP Connector on {self.host}:{self.port} - {e}")
             if self._server_socket:
@@ -263,6 +279,92 @@ class TCPConnector:
                 self.connected_clients.pop(client_key, None)
             handler.close()
             logger.info(f"TCP client disconnected from {client_addr}")
+            if handler.is_authenticated and handler.device_id:
+                self.mark_device_offline(
+                    device_id=handler.device_id,
+                    handler=handler,
+                    reason="Đứt kết nối TCP socket (Nghi vấn bị tắt nguồn / rút dây)"
+                )
+
+    def _watchdog_loop(self) -> None:
+        while self._running:
+            time.sleep(5.0)
+            now = time.time()
+            stale_handlers: list[tuple[str, ClientHandler, float]] = []
+            with self._clients_lock:
+                for key, handler in list(self.connected_clients.items()):
+                    if handler.is_authenticated and handler.device_id:
+                        last_hb = getattr(handler, "last_heartbeat", handler.last_activity)
+                        if (now - last_hb) > 25.0:
+                            stale_handlers.append((key, handler, now - last_hb))
+
+            for key, handler, idle_time in stale_handlers:
+                logger.warning(
+                    f"[Device Watchdog] Thiết bị [{handler.device_id}] không có Heartbeat quá {idle_time:.1f}s. Chủ động đóng socket."
+                )
+                self.mark_device_offline(
+                    device_id=handler.device_id,
+                    handler=handler,
+                    reason=f"Mất tín hiệu Heartbeat quá {int(idle_time)}s (Nghi vấn bị tắt nguồn / rút dây)",
+                )
+                handler.close()
+
+    def mark_device_online(self, handler: ClientHandler) -> None:
+        device_id = handler.device_id or f"ESP32_{handler.address[0]}"
+        prev_state = self._device_states.get(device_id)
+        self._device_states[device_id] = "ONLINE"
+        self._device_info[device_id] = {
+            "device_id": device_id,
+            "ip": handler.address[0],
+            "port": handler.address[1],
+            "uptime_s": handler.uptime_s,
+            "free_heap": handler.free_heap,
+            "rssi": handler.rssi,
+            "last_heartbeat": getattr(handler, "last_heartbeat", time.time()),
+        }
+        if prev_state != "ONLINE":
+            logger.info(f"[Device Watchdog] Thiết bị [{device_id}] đã TRỰC TUYẾN (ONLINE)")
+            self._notify_device_status({
+                "event_type": "DEVICE_STATUS",
+                "status": "DEVICE_ONLINE",
+                "device_id": device_id,
+                "ip": handler.address[0],
+                "port": handler.address[1],
+                "uptime_s": handler.uptime_s,
+                "rssi": handler.rssi,
+                "free_heap": handler.free_heap,
+                "timestamp": datetime.now().astimezone().isoformat(),
+            })
+
+    def mark_device_offline(self, device_id: str, handler: ClientHandler | None = None, reason: str = "") -> None:
+        prev_state = self._device_states.get(device_id)
+        self._device_states[device_id] = "OFFLINE"
+        info = self._device_info.get(device_id, {})
+        ip = handler.address[0] if handler else info.get("ip", "N/A")
+        port = handler.address[1] if handler else info.get("port", 0)
+        uptime_s = handler.uptime_s if handler and handler.uptime_s is not None else info.get("uptime_s")
+        last_hb = getattr(handler, "last_heartbeat", None) if handler else info.get("last_heartbeat")
+
+        if prev_state == "ONLINE":
+            logger.warning(f"[Device Watchdog] Thiết bị [{device_id}] đã MẤT TÍN HIỆU (OFFLINE): {reason}")
+            self._notify_device_status({
+                "event_type": "DEVICE_STATUS",
+                "status": "DEVICE_OFFLINE",
+                "device_id": device_id,
+                "ip": ip,
+                "port": port,
+                "uptime_s": uptime_s,
+                "last_heartbeat": last_hb,
+                "reason": reason,
+                "timestamp": datetime.now().astimezone().isoformat(),
+            })
+
+    def _notify_device_status(self, event: dict[str, Any]) -> None:
+        for listener in list(attendance_listeners):
+            try:
+                listener(event)
+            except Exception as e:
+                logger.warning(f"Error notifying device status listener: {e}")
 
     def _default_message_handler(self, msg: dict[str, Any], handler: ClientHandler) -> None:
         action = str(msg.get("action", "")).lower()
@@ -299,6 +401,7 @@ class TCPConnector:
                 handler.is_authenticated = True
                 handler.device_id = device_id
                 handler.session_token = session_token
+                self.mark_device_online(handler)
                 logger.info(f"3-Step Handshake mutual auth verified for [{device_id}] from {handler.address}")
                 client_logger.log_event(
                     device_id=device_id,
@@ -345,6 +448,7 @@ class TCPConnector:
             handler.is_authenticated = True
             handler.device_id = device_id
             handler.session_token = handshake_resp["session_token"]
+            self.mark_device_online(handler)
 
             logger.info(f"Handshake verified for device [{device_id}] from {handler.address}")
             client_logger.log_event(
@@ -358,6 +462,16 @@ class TCPConnector:
             return
 
         if action == "ping":
+            device_id = str(msg.get("device_id") or handler.device_id or f"ESP32_{handler.address[0]}")
+            handler.device_id = device_id
+            handler.uptime_s = msg.get("uptime_s", getattr(handler, "uptime_s", None))
+            handler.free_heap = msg.get("free_heap", getattr(handler, "free_heap", None))
+            handler.rssi = msg.get("rssi", getattr(handler, "rssi", None))
+            handler.pending_offline = msg.get("pending_offline", getattr(handler, "pending_offline", 0))
+            handler.last_heartbeat = time.time()
+            handler.last_activity = time.time()
+            if handler.is_authenticated:
+                self.mark_device_online(handler)
             handler.send_json({"action": "pong", "timestamp": int(time.time())})
             return
 
@@ -494,6 +608,11 @@ class TCPConnector:
                     "session_token": h.session_token,
                     "connected_at": getattr(h, "connected_at", h.last_activity),
                     "last_activity": h.last_activity,
+                    "last_heartbeat": getattr(h, "last_heartbeat", h.last_activity),
+                    "uptime_s": getattr(h, "uptime_s", None),
+                    "free_heap": getattr(h, "free_heap", None),
+                    "rssi": getattr(h, "rssi", None),
+                    "pending_offline": getattr(h, "pending_offline", 0),
                 })
             return clients
 

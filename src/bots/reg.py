@@ -291,6 +291,26 @@ def _build_trangthai_embed() -> discord.Embed:
         f"- Cơ sở dữ liệu: {metrics['active_database']}",
         f"- Đầu đọc online: {len(readers)} thiết bị",
     ]
+    if readers:
+        for r in readers:
+            dev_name = r.get("device_id", "ESP32")
+            ip = r.get("ip", "N/A")
+            uptime = r.get("uptime_s")
+            rssi = r.get("rssi")
+            free_heap = r.get("free_heap")
+
+            sub = [f"IP: {ip}"]
+            if uptime is not None:
+                h = uptime // 3600
+                m = (uptime % 3600) // 60
+                s = uptime % 60
+                sub.append(f"Uptime: {h}h {m}m {s}s" if h > 0 else f"Uptime: {m}m {s}s")
+            if rssi is not None and rssi != 0 and rssi != -100:
+                sub.append(f"Wi-Fi: {rssi} dBm")
+            if free_heap:
+                sub.append(f"RAM: {free_heap // 1024} KB")
+            lines.append(f"  • **{dev_name}**: {', '.join(sub)}")
+
     if metrics.get("failsafe_active"):
         lines.append("- Cảnh báo: Đang sử dụng CSDL dự phòng (Fail-Safe)")
     embed.description = "\n".join(lines)
@@ -691,6 +711,49 @@ async def _attendance_event_worker() -> None:
                     batch.append(next_event)
                 except asyncio.TimeoutError:
                     break
+
+            # Xử lý sự kiện trạng thái thiết bị (Online / Offline cảnh báo tắt máy)
+            device_events = [e for e in batch if e.get("event_type") == "DEVICE_STATUS"]
+            for dev_ev in device_events:
+                dev_status = dev_ev.get("status")
+                device_id = dev_ev.get("device_id", "ESP32")
+                ip = dev_ev.get("ip", "N/A")
+                time_str = _format_event_time(dev_ev.get("timestamp"))
+
+                if dev_status == "DEVICE_OFFLINE":
+                    reason = dev_ev.get("reason", "Mất kết nối máy chủ")
+                    uptime = dev_ev.get("uptime_s")
+                    lines = [
+                        f"- Thiết Bị: {device_id}",
+                        f"- Địa Chỉ IP: {ip}",
+                        f"- Tình Trạng: Mất kết nối / Nghi vấn bị rút điện hoặc tắt máy",
+                        f"- Lí Do: {reason}",
+                        f"- Thời Gian: {time_str}",
+                    ]
+                    if uptime is not None:
+                        h = uptime // 3600
+                        m = (uptime % 3600) // 60
+                        s = uptime % 60
+                        uptime_str = f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s"
+                        lines.append(f"- Uptime trước khi tắt: {uptime_str}")
+
+                    embed = discord.Embed(title="⚠️ Cảnh Báo: Đầu Đọc Mất Tín Hiệu", color=discord.Color.red())
+                    embed.description = "\n".join(lines)
+                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
+
+                elif dev_status == "DEVICE_ONLINE":
+                    lines = [
+                        f"- Thiết Bị: {device_id}",
+                        f"- Địa Chỉ IP: {ip}",
+                        f"- Trạng Thái: Trực tuyến (Sẵn sàng nhận thẻ)",
+                        f"- Thời Gian: {time_str}",
+                    ]
+                    rssi = dev_ev.get("rssi")
+                    if rssi is not None and rssi != 0 and rssi != -100:
+                        lines.append(f"- Sóng Wi-Fi: {rssi} dBm")
+                    embed = discord.Embed(title="✅ Đầu Đọc Đã Hoạt Động Trở Lại", color=discord.Color.green())
+                    embed.description = "\n".join(lines)
+                    last_send_time = await _send_with_ratelimit(channel, embed, last_send_time)
 
             success_events = [e for e in batch if e.get("status") == "SUCCESS" and e.get("student")]
             unknown_events = [e for e in batch if e.get("status") == "UNKNOWN_CARD" and e.get("uid")]
