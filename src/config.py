@@ -116,6 +116,10 @@ def load_config() -> dict[str, Any]:
         config["database"]["failsafe"]["user"] = os.getenv("DB_FAILSAFE_USER")
     if "DB_FAILSAFE_PASSWORD" in os.environ:
         config["database"]["failsafe"]["password"] = os.getenv("DB_FAILSAFE_PASSWORD")
+    if "DB_FAILSAFE_HOST" in os.environ:
+        config["database"]["failsafe"]["host"] = os.getenv("DB_FAILSAFE_HOST")
+    if "DB_FAILSAFE_PORT" in os.environ:
+        config["database"]["failsafe"]["port"] = int(os.getenv("DB_FAILSAFE_PORT", "3306"))
 
     return config
 

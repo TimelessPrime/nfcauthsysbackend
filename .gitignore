@@ -6,3 +6,4 @@ config/
 log/
 client_log/
 data/
+.env

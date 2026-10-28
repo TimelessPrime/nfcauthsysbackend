@@ -1,20 +1,23 @@
 services:
   nfc-mysql:
-    image: mysql:latest
+    image: mysql:8.0
     container_name: nfc-school-auth-mysql
     restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     ports:
       - "3306:3306"
     environment:
-      - MYSQL_ROOT_PASSWORD=2000
-      - MYSQL_DATABASE=nfc_attendance
+      - TZ=Asia/Ho_Chi_Minh
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-2000}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-nfc_attendance}
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p2000"]
-      interval: 3s
-      timeout: 2s
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD:-2000} || exit 1"]
+      interval: 4s
+      timeout: 3s
       retries: 15
+      start_period: 10s
 
   nfc-backend:
     build:
@@ -27,20 +30,25 @@ services:
         condition: service_healthy
     ports:
       - "5000:5000"   # FastAPI HTTP REST API
-      - "1337:1337"   # TCP Socket Connector for ESP32
+      - "1337:1337"   # TCP Socket Connector for ESP32 (LAN Reader)
     environment:
+      - TZ=Asia/Ho_Chi_Minh
       - HOST=0.0.0.0
       - PORT=5000
       - TCP_HOST=0.0.0.0
       - TCP_PORT=1337
-      - AUTH_TOKEN=nfcschool_secret_token_2026
+      - AUTH_TOKEN=${AUTH_TOKEN:-systemauth}
       - REQUIRE_AUTH=true
       - DB_TYPE=mysql
       - DB_HOST=nfc-mysql
       - DB_PORT=3306
       - DB_USER=root
-      - DB_PASSWORD=2000
-      - DB_NAME=nfc_attendance
+      - DB_PASSWORD=${MYSQL_ROOT_PASSWORD:-2000}
+      - DB_NAME=${MYSQL_DATABASE:-nfc_attendance}
+      - DB_FAILSAFE_HOST=nfc-mysql
+      - DB_FAILSAFE_PORT=3306
+      - DB_FAILSAFE_USER=root
+      - DB_FAILSAFE_PASSWORD=${MYSQL_ROOT_PASSWORD:-2000}
       - LOG_LEVEL=DEBUG
     volumes:
       - ./data:/app/data
@@ -52,6 +60,8 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
 volumes:
   mysql_data:
+

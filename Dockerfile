@@ -1,9 +1,10 @@
-# Lightweight Python base image
-FROM python:3.14-slim
+# Lightweight and stable Python base image
+FROM python:3.12-slim
 
-# Set environment variables for non-buffered logging and clean bytecode
+# Set environment variables for non-buffered logging, clean bytecode, and Vietnam timezone
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    TZ=Asia/Ho_Chi_Minh \
     HOST=0.0.0.0 \
     PORT=5000 \
     TCP_HOST=0.0.0.0 \
@@ -11,9 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies if required
+# Install system dependencies (curl for healthcheck, tzdata for proper timezone)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies first for layer caching
@@ -34,8 +36,9 @@ USER appuser
 EXPOSE 5000 1337
 
 # Healthcheck checking the root endpoint
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:5000/ || exit 1
 
 # Start the unified backend application
 CMD ["python", "main.py"]
+
