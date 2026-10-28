@@ -919,6 +919,67 @@ async def cmd_kenh(ctx: commands.Context, loai: str = "xem", kenh: discord.TextC
         await ctx.send(f"❌ Không thể lưu cấu hình cho loại kênh `{loai}`. Loại hợp lệ: `status`, `noti`, `reg`, `info`.")
 
 
+@bot.command(name="khoidonglai", aliases=["reboot"])
+async def cmd_khoidonglai(ctx: commands.Context, thiet_bi: str = "all") -> None:
+    result = send_reader_reboot(thiet_bi)
+    if result.get("success"):
+        embed = discord.Embed(title="🔄 Lệnh Khởi Động Lại Đã Được Gửi", color=discord.Color.gold())
+        embed.description = (
+            f"- Thiết bị: **{thiet_bi}**\n"
+            f"- Kết quả: {result.get('message', 'Thành công')}\n"
+            f"- Lưu ý: Đầu đọc sẽ mất kết nối trong khoảng 3-5 giây để nạp lại hệ thống."
+        )
+    else:
+        embed = discord.Embed(title="❌ Khởi Động Lại Thất Bại", color=discord.Color.red())
+        embed.description = f"- Lí do: {result.get('message', 'Không thể kết nối tới đầu đọc')}"
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="cauhinh", aliases=["config"])
+async def cmd_cauhinh(
+    ctx: commands.Context,
+    thiet_bi: str = "all",
+    cooldown_ms: int | None = None,
+    coi_bao_ms: int | None = None,
+    vi_tri: str | None = None,
+) -> None:
+    updates: dict[str, Any] = {}
+    if cooldown_ms is not None:
+        updates["cooldown_ms"] = cooldown_ms
+    if coi_bao_ms is not None:
+        updates["feedback_duration_ms"] = coi_bao_ms
+    if vi_tri is not None:
+        updates["location"] = vi_tri.strip()
+
+    if not updates:
+        embed = discord.Embed(title="⚙️ Hướng Dẫn Cấu Hình Đầu Đọc", color=discord.Color.blurple())
+        embed.description = (
+            "- Cú pháp: `!cauhinh [thiết bị / all] [cooldown_ms] [còi_báo_ms] [vị trí]`\n"
+            "- Ví dụ: `!cauhinh all 2000 150 \"Cong Chinh\"`\n"
+            "💡 *Mẹo: Dùng Slash Command* `/cauhinh` *để có giao diện gợi ý tham số trực quan hơn!*"
+        )
+        await ctx.send(embed=embed)
+        return
+
+    result = send_config_update(thiet_bi, updates)
+    if result.get("success"):
+        embed = discord.Embed(title="⚙️ Lệnh Cấu Hình Đã Được Gửi", color=discord.Color.blue())
+        lines = [f"- Thiết bị nhận lệnh: **{thiet_bi}**", f"- Trạng thái: {result.get('message', 'Đã chuyển tiếp lệnh')}"]
+        if "cooldown_ms" in updates:
+            lines.append(f"- Thời gian giãn cách quẹt thẻ: {updates['cooldown_ms']} ms")
+        if "feedback_duration_ms" in updates:
+            lines.append(f"- Thời gian bíp còi / LED: {updates['feedback_duration_ms']} ms")
+        if "location" in updates:
+            lines.append(f"- Vị trí đặt đầu đọc: {updates['location']}")
+        lines.append("- Đầu đọc sẽ tự động lưu vào bộ nhớ NVS và áp dụng ngay lập tức.")
+        embed.description = "\n".join(lines)
+    else:
+        embed = discord.Embed(title="❌ Cấu Hình Thất Bại", color=discord.Color.red())
+        embed.description = f"- Lí do: {result.get('message', 'Không thể kết nối tới đầu đọc')}"
+    await ctx.send(embed=embed)
+
+
+
 
 
 def _safe_enqueue(event: dict[str, Any]) -> None:
