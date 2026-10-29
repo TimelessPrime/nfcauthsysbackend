@@ -32,6 +32,7 @@ def build_help_embed() -> discord.Embed:
         "- `/khoidonglai [thiết bị]`: Khởi động lại đầu đọc từ xa qua mạng TCP\n"
         "- `/ketnoi`: Quét và kiểm tra kết nối đầu đọc ESP32 trên LAN\n"
         "- `/kenh [loai] [kenh]`: Thiết lập hoặc xem phân bổ kênh thông báo\n"
+        "- `/sync [pham_vi]`: Đồng bộ thủ công Slash Command cho server hoặc toàn cầu\n"
         "- `/trangthai`: Xem tình trạng hoạt động hệ thống\n"
         "- `/panel`: Bảng điều khiển giao diện nhanh"
     )

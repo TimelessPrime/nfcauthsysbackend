@@ -42,23 +42,49 @@ async def on_ready() -> None:
 
     if is_sync_slash_commands():
         try:
+            # 1. Sync global commands so Discord registers commands for all current and future servers
+            synced_global = await bot.tree.sync()
+            logger.info(f"Đã sync toàn cầu (global) {len(synced_global)} slash commands.")
+
+            # 2. Sync to all current guilds for instant command availability without waiting for cache propagation
+            for g in bot.guilds:
+                try:
+                    bot.tree.copy_global_to(guild=g)
+                    synced_guild = await bot.tree.sync(guild=g)
+                    logger.info(f"Đã sync tức thì {len(synced_guild)} slash commands tới server '{g.name}' ({g.id})")
+                except Exception as ge:
+                    logger.warning(f"Lỗi khi sync commands tới server '{g.name}' ({g.id}): {ge}")
+
+            # 3. If a specific dev guild_id was configured and bot is not in bot.guilds yet, sync it explicitly
             guild_id = get_guild_id()
-            if guild_id:
-                guild_obj = discord.Object(id=guild_id)
-                bot.tree.copy_global_to(guild=guild_obj)
-                synced = await bot.tree.sync(guild=guild_obj)
-                logger.info(f"Synced {len(synced)} slash commands to guild {guild_id}")
-            else:
-                synced = await bot.tree.sync()
-                logger.info(f"Synced {len(synced)} global slash commands")
+            if guild_id and not any(g.id == guild_id for g in bot.guilds):
+                try:
+                    guild_obj = discord.Object(id=guild_id)
+                    bot.tree.copy_global_to(guild=guild_obj)
+                    synced_dev = await bot.tree.sync(guild=guild_obj)
+                    logger.info(f"Đã sync {len(synced_dev)} slash commands tới guild dev cấu hình {guild_id}")
+                except Exception as de:
+                    logger.warning(f"Lỗi khi sync tới guild dev {guild_id}: {de}")
         except Exception as e:
-            logger.warning(f"Error syncing slash commands: {e}")
+            logger.warning(f"Lỗi khi đồng bộ slash commands: {e}")
 
     if bot_module._worker_task is None or bot_module._worker_task.done():
         bot_module._worker_task = bot.loop.create_task(attendance_event_worker())
 
     if bot_module._status_periodic_task is None or bot_module._status_periodic_task.done():
         bot_module._status_periodic_task = bot.loop.create_task(status_periodic_worker())
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild) -> None:
+    logger.info(f"Bot vừa tham gia server mới: {guild.name} (ID: {guild.id})")
+    if is_sync_slash_commands():
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            logger.info(f"Đã sync tức thì {len(synced)} slash commands cho server mới '{guild.name}' ({guild.id})")
+        except Exception as e:
+            logger.warning(f"Lỗi khi sync slash commands cho server mới {guild.name}: {e}")
 
 
 async def start_discord_bot() -> None:

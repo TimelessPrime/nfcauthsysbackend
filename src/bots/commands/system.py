@@ -132,6 +132,41 @@ def register_system_commands(bot: commands.Bot) -> None:
         else:
             await interaction.response.send_message(f"Không thể lưu cấu hình cho loại kênh `{loai}`.", ephemeral=True)
 
+    @bot.tree.command(name="sync", description="Đồng bộ thủ công toàn bộ Slash Command cho server này")
+    @app_commands.describe(pham_vi="Phạm vi đồng bộ (server này hoặc toàn cầu)")
+    @app_commands.choices(pham_vi=[
+        app_commands.Choice(name="Chỉ server này (Tức thì)", value="guild"),
+        app_commands.Choice(name="Toàn bộ các server (Global)", value="global"),
+    ])
+    async def slash_sync(interaction: discord.Interaction, pham_vi: str = "guild") -> None:
+        is_admin = False
+        if interaction.user.guild_permissions.administrator:
+            is_admin = True
+        else:
+            user_roles = [r.name for r in getattr(interaction.user, "roles", [])]
+            if any(r in get_admin_roles() for r in user_roles):
+                is_admin = True
+
+        if not is_admin:
+            await interaction.response.send_message("Bạn không có quyền quản trị để đồng bộ lệnh.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if pham_vi == "global":
+                synced = await bot.tree.sync()
+                await interaction.followup.send(f"Đã đồng bộ thành công **{len(synced)}** slash commands trên phạm vi **toàn cầu (mọi server)**!")
+            else:
+                if interaction.guild:
+                    bot.tree.copy_global_to(guild=interaction.guild)
+                    synced = await bot.tree.sync(guild=interaction.guild)
+                    await interaction.followup.send(f"Đã đồng bộ tức thì **{len(synced)}** slash commands cho server **{interaction.guild.name}**!")
+                else:
+                    synced = await bot.tree.sync()
+                    await interaction.followup.send(f"Đã đồng bộ **{len(synced)}** slash commands.")
+        except Exception as e:
+            await interaction.followup.send(f"Lỗi khi đồng bộ slash commands: {e}")
+
     # Prefix commands
     @bot.command(name="help")
     async def cmd_help(ctx: commands.Context) -> None:
@@ -238,3 +273,32 @@ def register_system_commands(bot: commands.Bot) -> None:
             await ctx.send(embed=embed)
         else:
             await ctx.send(f"Không thể lưu cấu hình cho loại kênh `{loai}`. Các loại hợp lệ: status, noti, reg, info.")
+
+    @bot.command(name="sync")
+    async def cmd_sync(ctx: commands.Context, pham_vi: str = "guild") -> None:
+        is_admin = False
+        if ctx.author.guild_permissions.administrator:
+            is_admin = True
+        else:
+            user_roles = [r.name for r in getattr(ctx.author, "roles", [])]
+            if any(r in get_admin_roles() for r in user_roles):
+                is_admin = True
+
+        if not is_admin:
+            await ctx.send("Bạn không có quyền quản trị để đồng bộ lệnh.")
+            return
+
+        try:
+            if pham_vi.lower() == "global":
+                synced = await bot.tree.sync()
+                await ctx.send(f"Đã đồng bộ thành công **{len(synced)}** slash commands trên phạm vi **toàn cầu (mọi server)**!")
+            else:
+                if ctx.guild:
+                    bot.tree.copy_global_to(guild=ctx.guild)
+                    synced = await bot.tree.sync(guild=ctx.guild)
+                    await ctx.send(f"Đã đồng bộ tức thì **{len(synced)}** slash commands cho server **{ctx.guild.name}**!")
+                else:
+                    synced = await bot.tree.sync()
+                    await ctx.send(f"Đã đồng bộ **{len(synced)}** slash commands.")
+        except Exception as e:
+            await ctx.send(f"Lỗi khi đồng bộ slash commands: {e}")
